@@ -1,0 +1,39 @@
+# Documentos internos de planejamento (specs, planos, spikes) — ficam só local
+docs/superpowers/
+docs/spikes/
+
+# Dependências
+node_modules/
+
+# Build e empacotamento
+out/
+dist/
+release/
+*.tsbuildinfo
+
+# Testes e cobertura
+coverage/
+test-results/
+playwright-report/
+
+# Logs e cache
+*.log
+npm-debug.log*
+.eslintcache
+.vite/
+
+# Ambiente e segredos
+.env
+.env.*
+!.env.example
+
+# Editor e sistema
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Ferramentas locais de agentes
+.claude/settings.local.json
