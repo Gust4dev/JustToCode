@@ -1,0 +1,46 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Sem cache de dependências: workflow de publicação, evita cache poisoning.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # O npm 10 do Node 22 roda os install scripts por padrão (o bloco allowScripts do
+      # package.json só é lido pelo npm 11+ e é ignorado aqui). O postinstall do `electron`
+      # baixa o binário e o `electron-builder install-app-deps` recompila o better-sqlite3.
+      - run: npm ci
+
+      # Falha cedo se o binário do Electron não foi baixado (os testes rodam sob ele).
+      - name: conferir binário do Electron
+        run: node -e "console.log(require('electron'))"
+
+      - run: npm test
+
+      - run: npm run build
+
+      - name: notas
+        shell: bash
+        run: |
+          PREV=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || echo "")
+          node scripts/release-notes.mjs "$PREV" "$GITHUB_REF_NAME" > notes.md
+          cat notes.md
+
+      - name: publicar
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --publish always -c.releaseInfo.releaseNotesFile=notes.md

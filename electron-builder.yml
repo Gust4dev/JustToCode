@@ -1,0 +1,35 @@
+appId: dev.gust4dev.justtocode
+productName: JustToCode
+directories:
+  buildResources: build
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+asarUnpack:
+  - resources/**
+  - node_modules/better-sqlite3/**
+  - node_modules/@vscode/ripgrep-win32-x64/**
+  - node_modules/@parcel/watcher-win32-x64/**
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  executableName: JustToCode
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: ${productName}-Setup-${version}.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+npmRebuild: false
+publish:
+  provider: github
+  owner: Gust4dev
+  repo: JustToCode
+  releaseType: release

@@ -37,3 +37,4 @@ desktop.ini
 
 # Ferramentas locais de agentes
 .claude/settings.local.json
+/docs

@@ -8,10 +8,10 @@ Um app desktop para trabalhar com agentes de IA no seu código — vendo **o que
 
 <br>
 
-![Status](https://img.shields.io/badge/status-em%20constru%C3%A7%C3%A3o-f59e0b?style=for-the-badge)
+![Status](https://img.shields.io/badge/status-MVP%20completo-22c55e?style=for-the-badge)
 ![Plataforma](https://img.shields.io/badge/Windows-11-0078D4?style=for-the-badge&logo=windows11&logoColor=white)
 ![Electron](https://img.shields.io/badge/Electron-47848F?style=for-the-badge&logo=electron&logoColor=white)
-![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
+![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
 
@@ -125,17 +125,17 @@ flowchart LR
 
 | Fase | Entrega | Status |
 |:---:|---|:---:|
-| **0** | Fundação: app empacotado, banco local, auto-update por tag, testes de integração com o 9router | 🚧 |
-| **1** | Ver o que acontece: projetos, chat com ferramentas, diff, permissões, anexos, inspetor de payload, medidor | ⏳ |
-| **2** | Contexto sob controle: janela efetiva por combo, compactação automática e incremental, resumo local | ⏳ |
-| **3** | Paralelo e ecossistema: chats simultâneos, atribuição por chat, revert de três vias, skills, subagents, mensagem de commit | ⏳ |
-| **4** | Componentes: 9router, llama.cpp e modelos GGUF gerenciados pela interface | ⏳ |
+| **0** | Fundação: app empacotado, banco local, auto-update por tag, testes de integração com o 9router | ✅ |
+| **1** | Ver o que acontece: projetos, chat com ferramentas, diff, permissões, anexos, inspetor de payload, medidor | ✅ |
+| **2** | Contexto sob controle: janela efetiva por combo, compactação automática e incremental, resumo local | ✅ |
+| **3** | Paralelo e ecossistema: chats simultâneos, atribuição por chat, revert de três vias, skills, subagents, mensagem de commit | ✅ |
+| **4** | Componentes: 9router, llama.cpp e modelos GGUF gerenciados pela interface | ✅ |
+
+Todas as fases do MVP estão implementadas; o próximo passo é o uso real com os modelos do 9router.
 
 ---
 
 ## 🛠️ Desenvolvimento
-
-> O código ainda está sendo construído (Fase 0). Os comandos abaixo passam a valer quando o esqueleto do app chegar.
 
 **Pré-requisitos:** Windows 11 · Node.js 22+ · Git · [9router](https://github.com/decolua/9router) rodando em `http://localhost:20128`
 
@@ -158,7 +158,7 @@ Sobe a versão, cria a tag `v0.1.0` e faz o push. O GitHub Actions compila o ins
 
 ## 🧱 Stack
 
-**Electron** · **electron-vite** · **electron-builder** · **electron-updater** · **React 18** · **TypeScript** · **Tailwind** · **shadcn/ui** · **Monaco** · **better-sqlite3** · **openai** · **js-tiktoken** · **ripgrep** · **Vitest** · **Playwright**
+**Electron** · **electron-vite** · **electron-builder** · **electron-updater** · **React 19** · **TypeScript** · **Tailwind** · **shadcn/ui** · **Monaco** · **better-sqlite3** · **openai** · **js-tiktoken** · **ripgrep** · **Vitest**
 
 ---
 
