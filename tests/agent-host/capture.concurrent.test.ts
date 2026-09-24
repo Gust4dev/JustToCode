@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -38,7 +38,8 @@ interface Env {
 }
 
 function setup(): Env {
-  const base = mkdtempSync(join(tmpdir(), 'jtc-conc-'))
+  // No CI o tmpdir vem em formato 8.3 (RUNNER~1); o caminho canônico é o longo.
+  const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'jtc-conc-')))
   const root = join(base, 'repo')
   mkdirSync(root)
   sh(root, 'init', '-q')
@@ -74,7 +75,11 @@ function setup(): Env {
   return { base, root, db, repo, capture, registry, toolWrites, blobs, events, meta, watcher: null }
 }
 
-async function startWatcher(env: Env): Promise<ProjectWatcher> {
+/**
+ * Liga o watcher e só volta quando ele já entrega eventos (no Windows a assinatura pode demorar
+ * a ficar ativa): reescreve um arquivo de aquecimento até ele ser registrado e o marca revisado.
+ */
+async function startWatcher(env: Env, root = env.root): Promise<ProjectWatcher> {
   const watcher = createProjectWatcher({
     ctx: { db: env.db, blobs: env.blobs, emit: (e) => env.events.push(e) },
     repo: env.repo,
@@ -84,7 +89,26 @@ async function startWatcher(env: Env): Promise<ProjectWatcher> {
     debounceMs: 200
   })
   env.watcher = watcher
-  await watcher.start('p1', env.root)
+  await watcher.start('p1', root)
+  const warm = join(env.root, 'aquecimento.txt')
+  let n = 0
+  const deadline = Date.now() + 30_000
+  for (;;) {
+    writeFileSync(
+      warm,
+      `aquecimento ${n++}
+`
+    )
+    const seen = await waitFor(() => byPath(env.repo, 'aquecimento.txt').length > 0, 1000).catch(
+      () => false
+    )
+    if (seen) break
+    if (Date.now() > deadline) throw new Error('o watcher não entregou eventos em 30 s')
+  }
+  // Deixa o debounce de reescritas anteriores assentar antes de limpar.
+  await new Promise((r) => setTimeout(r, 500))
+  env.repo.markReviewed(env.repo.listUnreviewed('p1').map((c) => c.id))
+  env.events.length = 0
   return watcher
 }
 
@@ -316,4 +340,29 @@ describe('watcher de projeto', { timeout: 60_000 }, () => {
     await new Promise((r) => setTimeout(r, 500))
     expect(repo.listUnreviewed('p1').map((c) => c.path)).toEqual(['sentinela.txt'])
   })
+
+  it('raiz aberta em formato 8.3 (curto) ainda gera external', async (t) => {
+    if (process.platform !== 'win32') return t.skip('nomes 8.3 só existem no Windows')
+    const short = shortPath(env.root)
+    if (!short || short.toLowerCase() === env.root.toLowerCase()) {
+      return t.skip('o volume não tem nomes curtos (8.3) habilitados')
+    }
+    await startWatcher(env, short)
+    writeFileSync(join(env.root, 'a.txt'), 'via curto\n')
+    const [c] = await waitFor(() => {
+      const l = byPath(env.repo, 'a.txt')
+      return l.length > 0 && l
+    })
+    expect(c).toMatchObject({ origin: 'external', path: 'a.txt', afterHash: sha('via curto\n') })
+  })
 })
+
+/** Nome curto 8.3 de um caminho (null se não der para obter). */
+function shortPath(p: string): string | null {
+  const r = spawnSync('cmd.exe', ['/d', '/s', '/c', `"for %I in ("${p}") do @echo %~sI"`], {
+    windowsVerbatimArguments: true,
+    encoding: 'utf8'
+  })
+  if (r.status !== 0 || typeof r.stdout !== 'string') return null
+  return r.stdout.trim() || null
+}

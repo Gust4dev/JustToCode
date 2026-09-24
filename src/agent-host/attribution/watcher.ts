@@ -1,6 +1,6 @@
 import { readFile, stat } from 'node:fs/promises'
-import { realpathSync } from 'node:fs'
-import { isAbsolute, relative, resolve } from 'node:path'
+import { existsSync, realpathSync } from 'node:fs'
+import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { subscribe } from '@parcel/watcher'
 import type { HostContext } from '../context'
 import type { FileChangeRepo } from '../repo/fileChanges'
@@ -32,7 +32,10 @@ interface Subscription {
 }
 
 interface Watched {
+  /** Raiz canônica (realpath: caminho longo, sem nomes 8.3 nem junctions). */
   root: string
+  /** Formas aceitas da raiz para interpretar eventos (canônica + a informada). */
+  roots: string[]
   sub: Subscription | null
   timers: Map<string, ReturnType<typeof setTimeout>>
   /** Instante do último evento por caminho relativo. */
@@ -54,6 +57,40 @@ const realRoot = (root: string): string => {
   } catch {
     return resolve(root)
   }
+}
+
+/** Realpath do ancestral existente mais profundo (o próprio caminho pode ter sido apagado). */
+const realLoose = (abs: string): string => {
+  let cur = abs
+  const rest: string[] = []
+  while (!existsSync(cur)) {
+    const parent = dirname(cur)
+    if (parent === cur) return abs
+    rest.unshift(relative(parent, cur))
+    cur = parent
+  }
+  try {
+    return resolve(realpathSync.native(cur), ...rest)
+  } catch {
+    return abs
+  }
+}
+
+/** `relative` do win32 já compara sem diferenciar maiúsculas; aqui só filtra o que está fora. */
+const inside = (root: string, abs: string): string | null => {
+  const r = relative(root, abs)
+  if (!r || /^\.\.([\\/]|$)/.test(r) || isAbsolute(r)) return null
+  return r
+}
+
+/** Caminho relativo do evento, tolerando raiz/evento em formas diferentes (8.3, caixa). */
+const relOf = (roots: string[], absPath: string): string | null => {
+  for (const root of roots) {
+    const r = inside(root, absPath)
+    if (r) return r
+  }
+  const real = realLoose(absPath)
+  return real === absPath ? null : inside(roots[0], real)
 }
 
 /** Caminhos (relativos) ignorados pelo git, consultados em lote. */
@@ -158,8 +195,8 @@ export function createProjectWatcher(d: WatcherDeps): ProjectWatcher {
 
   const onEvent = (projectId: string, w: Watched, absPath: string): void => {
     if (w.stopped) return
-    const relRaw = relative(w.root, absPath)
-    if (!relRaw || relRaw.startsWith('..') || isAbsolute(relRaw)) return
+    const relRaw = relOf(w.roots, absPath)
+    if (!relRaw) return
     const rel = toPosix(relRaw)
     if (HARD_IGNORED.test(rel)) return
     w.eventAt.set(rel, Date.now())
@@ -195,6 +232,7 @@ export function createProjectWatcher(d: WatcherDeps): ProjectWatcher {
       if (existing) await stop(projectId)
       const w: Watched = {
         root: abs,
+        roots: [...new Set([abs, resolve(root)])],
         sub: null,
         timers: new Map(),
         eventAt: new Map(),
