@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { resolveShell, shellTool } from '../../src/agent-host/tools/shell'
@@ -69,7 +69,8 @@ const SPAWN_CHILD =
 
 describe.skipIf(!isWin)('shell tool', () => {
   beforeAll(() => {
-    root = mkdtempSync(join(tmpdir(), 'jtc-shell-'))
+    // realpath.native expande nomes curtos 8.3 (ex.: RUNNER~1 no CI), como o PowerShell faz no $PWD
+    root = realpathSync.native(mkdtempSync(join(tmpdir(), 'jtc-shell-')))
   })
 
   afterAll(async () => {
