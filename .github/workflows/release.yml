@@ -33,16 +33,27 @@ jobs:
 
       - run: npm run build
 
+      # Notas desde a última release PUBLICADA (tags cujo build falhou não contam).
       - name: notas
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          PREV=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || echo "")
+          PREV=$(gh release list --exclude-drafts --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null || echo "")
           node scripts/release-notes.mjs "$PREV" "$GITHUB_REF_NAME" > notes.md
           cat notes.md
+
+      # A release é criada antes: se o electron-builder criar, os uploads em paralelo
+      # podem gerar duas releases com a mesma tag (aconteceu na v0.1.4).
+      - name: criar release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" --title "${GITHUB_REF_NAME#v}" --notes-file notes.md
 
       # bash: o PowerShell quebra `-c.chave=valor` em dois argumentos.
       - name: publicar
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --win --publish always --config.releaseInfo.releaseNotesFile=notes.md
+        run: npx electron-builder --win --publish always
