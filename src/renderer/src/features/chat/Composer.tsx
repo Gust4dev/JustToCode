@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ArrowUp, Paperclip, Sparkles, Square, SquareTerminal } from 'lucide-react'
+import { ArrowUp, AtSign, Paperclip, Sparkles, Square, SquareTerminal } from 'lucide-react'
 import { toast } from 'sonner'
-import type { SlashCommand } from '@shared/domain'
+import type { Instruction, SlashCommand } from '@shared/domain'
 import { call } from '@renderer/lib/host'
 import { errorMessage } from '@renderer/features/projects/store'
 import { Button } from '@renderer/components/ui/button'
@@ -17,7 +17,20 @@ import {
   readImageFile,
   type DraftAttachment
 } from './attachments'
-import { filterCommands, moveIndex, resolveSlashText, slashQuery } from './slashCommands'
+import {
+  applyMention,
+  filterCommands,
+  filterMentions,
+  mentionQuery,
+  moveIndex,
+  resolveSlashText,
+  slashQuery,
+  withBuiltins,
+  type MentionItem
+} from './slashCommands'
+import { RuleDialog } from '@renderer/features/instructions/RuleDialog'
+import { parseRule, type RuleDraft } from '@renderer/features/instructions/rules'
+import { SCOPE_LABEL, parseRuleCommand } from '@renderer/features/instructions/logic'
 
 /** Comandos por projeto; host sem `ecosystem.commands` → lista vazia. */
 const commandCache = new Map<string, Promise<SlashCommand[]>>()
@@ -36,15 +49,68 @@ function loadCommands(projectId: string, fresh = false): Promise<SlashCommand[]>
   return p
 }
 
+/** Instruções manuais (`@nome`) por chat; host sem `instructions.list` → lista vazia. */
+const mentionCache = new Map<string, Promise<MentionItem[]>>()
+
+function loadMentions(chatId: string, fresh = false): Promise<MentionItem[]> {
+  let p = fresh ? undefined : mentionCache.get(chatId)
+  if (!p) {
+    p = call('instructions.list', { chatId })
+      .then((list: Instruction[]) =>
+        list
+          .filter((i) => i.enabled && i.trigger === 'manual' && i.kind !== 'memory')
+          .map((i) => ({ name: i.name, description: i.description, scope: SCOPE_LABEL[i.scope] }))
+      )
+      .catch((e: unknown) => {
+        mentionCache.delete(chatId)
+        if ((e as { code?: unknown } | null)?.code !== 'UNKNOWN_METHOD')
+          console.warn('instructions.list falhou', e)
+        return [] as MentionItem[]
+      })
+    mentionCache.set(chatId, p)
+  }
+  return p
+}
+
+interface MenuEntry {
+  key: string
+  icon: 'command' | 'skill' | 'mention'
+  label: string
+  description: string
+  scope: string
+  /** Texto do campo depois de escolher. */
+  apply(text: string): string
+}
+
+const commandEntry = (c: SlashCommand): MenuEntry => ({
+  key: `${c.source}:${c.scope}:${c.name}`,
+  icon: c.source === 'skill' ? 'skill' : 'command',
+  label: `/${c.name}`,
+  description: c.description,
+  scope: c.path === '' ? 'app' : c.scope === 'project' ? 'projeto' : 'global',
+  apply: () => `/${c.name} `
+})
+
+const mentionEntry = (m: MentionItem): MenuEntry => ({
+  key: `@${m.scope}:${m.name}`,
+  icon: 'mention',
+  label: `@${m.name}`,
+  description: m.description,
+  scope: m.scope,
+  apply: (text) => applyMention(text, m.name)
+})
+
+const MENU_ICON = { command: SquareTerminal, skill: Sparkles, mention: AtSign } as const
+
 function SlashMenu({
   items,
   active,
   onPick,
   onHover
 }: {
-  items: SlashCommand[]
+  items: MenuEntry[]
   active: number
-  onPick(c: SlashCommand): void
+  onPick(c: MenuEntry): void
   onHover(i: number): void
 }): React.JSX.Element {
   const listRef = useRef<HTMLUListElement>(null)
@@ -57,39 +123,36 @@ function SlashMenu({
     <ul
       ref={listRef}
       role="listbox"
-      aria-label="Comandos"
+      aria-label="Sugestões"
       className="absolute right-0 bottom-full left-0 z-20 mb-1 max-h-64 overflow-y-auto rounded-lg border bg-popover p-1 text-popover-foreground shadow-md"
     >
-      {items.map((c, i) => (
-        <li
-          key={`${c.source}:${c.scope}:${c.name}`}
-          role="option"
-          aria-selected={i === active}
-          data-index={i}
-          className={cn(
-            'flex cursor-default items-start gap-2 rounded-md px-2 py-1.5 text-xs',
-            i === active && 'bg-accent text-accent-foreground'
-          )}
-          onMouseDown={(e) => {
-            e.preventDefault()
-            onPick(c)
-          }}
-          onMouseMove={() => onHover(i)}
-        >
-          {c.source === 'skill' ? (
-            <Sparkles className="mt-px size-3.5 shrink-0 text-muted-foreground" />
-          ) : (
-            <SquareTerminal className="mt-px size-3.5 shrink-0 text-muted-foreground" />
-          )}
-          <span className="shrink-0 font-mono font-medium">/{c.name}</span>
-          <span className="min-w-0 flex-1 truncate text-muted-foreground" title={c.description}>
-            {c.description}
-          </span>
-          <span className="shrink-0 text-[10px] text-muted-foreground/70">
-            {c.scope === 'project' ? 'projeto' : 'global'}
-          </span>
-        </li>
-      ))}
+      {items.map((c, i) => {
+        const Icon = MENU_ICON[c.icon]
+        return (
+          <li
+            key={c.key}
+            role="option"
+            aria-selected={i === active}
+            data-index={i}
+            className={cn(
+              'flex cursor-default items-start gap-2 rounded-md px-2 py-1.5 text-xs',
+              i === active && 'bg-accent text-accent-foreground'
+            )}
+            onMouseDown={(e) => {
+              e.preventDefault()
+              onPick(c)
+            }}
+            onMouseMove={() => onHover(i)}
+          >
+            <Icon className="mt-px size-3.5 shrink-0 text-muted-foreground" />
+            <span className="shrink-0 font-mono font-medium">{c.label}</span>
+            <span className="min-w-0 flex-1 truncate text-muted-foreground" title={c.description}>
+              {c.description}
+            </span>
+            <span className="shrink-0 text-[10px] text-muted-foreground/70">{c.scope}</span>
+          </li>
+        )
+      })}
     </ul>
   )
 }
@@ -99,7 +162,8 @@ export function Composer({
   projectId,
   busy,
   onSend,
-  onStop
+  onStop,
+  top
 }: {
   chatId: string
   /** Projeto do chat (para os slash commands); null = sem autocomplete. */
@@ -108,6 +172,8 @@ export function Composer({
   /** Devolve true se a mensagem foi aceita (o rascunho é limpo). */
   onSend(text: string, attachments: DraftAttachment[]): Promise<boolean>
   onStop(): void
+  /** Conteúdo acima do campo (fila, avisos). */
+  top?: React.ReactNode
 }): React.JSX.Element {
   const [text, setText] = useState('')
   const [items, setItems] = useState<DraftAttachment[]>([])
@@ -118,6 +184,8 @@ export function Composer({
   const [commands, setCommands] = useState<{ projectId: string; list: SlashCommand[] } | null>(null)
   const [active, setActive] = useState(0)
   const [dismissed, setDismissed] = useState<string | null>(null)
+  const [mentions, setMentions] = useState<{ chatId: string; list: MentionItem[] } | null>(null)
+  const [ruleDraft, setRuleDraft] = useState<RuleDraft | null>(null)
 
   const query = slashQuery(text)
   const wantsCommands = query !== null && projectId !== null
@@ -141,19 +209,35 @@ export function Composer({
     }
   }, [justSlash, projectId])
 
+  // `@nome` (instruções manuais): carrega ao digitar `@`, recarrega a cada `@` novo.
+  const mention = query === null ? mentionQuery(text) : null
+  const wantsMentions = mention !== null
+  const justAt = mention === ''
+  useEffect(() => {
+    if (!wantsMentions) return
+    if (!justAt && mentions?.chatId === chatId) return
+    let alive = true
+    void loadMentions(chatId, justAt).then((list) => alive && setMentions({ chatId, list }))
+    return () => {
+      alive = false
+    }
+  }, [wantsMentions, justAt, chatId, mentions?.chatId])
+
   const cmdList = useMemo(
-    () => (commands && commands.projectId === projectId ? commands.list : []),
+    () => withBuiltins(commands && commands.projectId === projectId ? commands.list : []),
     [commands, projectId]
   )
-  const matches = useMemo(
-    () => (query === null ? [] : filterCommands(cmdList, query)),
-    [cmdList, query]
-  )
+  const matches = useMemo((): MenuEntry[] => {
+    if (query !== null) return filterCommands(cmdList, query).map(commandEntry)
+    if (mention !== null && mentions?.chatId === chatId)
+      return filterMentions(mentions.list, mention).map(mentionEntry)
+    return []
+  }, [cmdList, query, mention, mentions, chatId])
   const menuOpen = matches.length > 0 && dismissed !== text
   const activeIndex = Math.min(active, Math.max(0, matches.length - 1))
 
-  const pick = (c: SlashCommand): void => {
-    setText(`/${c.name} `)
+  const pick = (c: MenuEntry): void => {
+    setText(c.apply(text))
     setActive(0)
     areaRef.current?.focus()
   }
@@ -186,10 +270,28 @@ export function Composer({
     }
   }
 
-  const canSend = !busy && !sending && (text.trim().length > 0 || items.length > 0)
+  // Com o chat rodando, enviar enfileira (o host devolve `queuedId`).
+  const hasDraft = text.trim().length > 0 || items.length > 0
+  const canSend = !sending && hasDraft
 
   const submit = async (): Promise<void> => {
     if (!canSend) return
+    const rule = parseRuleCommand(text)
+    if (rule !== null) {
+      if (!rule) {
+        toast.info('Escreva a regra depois de /regra (ex.: /regra responda em português).')
+        return
+      }
+      setSending(true)
+      try {
+        setRuleDraft(await parseRule(chatId, rule))
+      } catch (e) {
+        toast.error(`Não foi possível interpretar a regra: ${errorMessage(e)}`)
+      } finally {
+        setSending(false)
+      }
+      return
+    }
     setSending(true)
     try {
       let outgoing = text.trim()
@@ -217,6 +319,7 @@ export function Composer({
   return (
     <div className="shrink-0 px-3 pb-3">
       <div className="mx-auto w-full max-w-3xl">
+        {top}
         <div
           className={cn(
             'relative rounded-xl border bg-card shadow-xs transition-colors focus-within:border-ring/60',
@@ -249,7 +352,9 @@ export function Composer({
             rows={1}
             value={text}
             placeholder={
-              busy ? 'O agente está trabalhando…' : 'Peça algo ao agente (/ para comandos)'
+              busy
+                ? 'O agente está trabalhando… (Enter enfileira)'
+                : 'Peça algo ao agente (/ para comandos, @ para instruções)'
             }
             aria-label="Mensagem"
             aria-autocomplete="list"
@@ -317,7 +422,7 @@ export function Composer({
               <span className="flex shrink-0 items-center whitespace-nowrap [&_*]:whitespace-nowrap">
                 <ContextMeter chatId={chatId} />
               </span>
-              {busy ? (
+              {busy && (
                 <Button
                   variant="secondary"
                   size="icon-sm"
@@ -328,12 +433,13 @@ export function Composer({
                 >
                   <Square className="size-3 fill-current" />
                 </Button>
-              ) : (
+              )}
+              {(!busy || hasDraft) && (
                 <Button
                   size="icon-sm"
                   className="size-7 rounded-lg"
-                  aria-label="Enviar"
-                  title="Enviar (Enter)"
+                  aria-label={busy ? 'Enfileirar' : 'Enviar'}
+                  title={busy ? 'Enfileirar (Enter)' : 'Enviar (Enter)'}
                   disabled={!canSend}
                   onClick={() => void submit()}
                 >
@@ -344,6 +450,17 @@ export function Composer({
           </div>
         </div>
       </div>
+      <RuleDialog
+        chatId={chatId}
+        draft={ruleDraft}
+        onOpenChange={(o) => {
+          if (!o) {
+            setRuleDraft(null)
+            areaRef.current?.focus()
+          }
+        }}
+        onSaved={() => setText('')}
+      />
     </div>
   )
 }

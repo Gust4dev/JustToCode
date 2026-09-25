@@ -3,6 +3,9 @@ import type {
   ChatStatus,
   CompactionRecord,
   CompactionTrigger,
+  Instruction,
+  QueueState,
+  ReasoningLevel,
   StoredMessage,
   ToolCallRecord
 } from '@shared/domain'
@@ -18,12 +21,57 @@ export interface ChatViewState {
   toolCalls: Record<string, LiveToolCall>
   status: ChatStatus
   lastError: { message: string; code?: string } | null
-  modelSwitches: { afterSeq: number; from: string | null; to: string }[]
+  modelSwitches: ModelSwitchMark[]
   /** Uma compactação está em andamento (entre `compaction_started` e o fim). */
   compacting: boolean
   /** Registros de compactação do chat, por `createdAt`. */
   compactions: CompactionRecord[]
+  /** Fila de mensagens do chat (`queue.get` / `queue_changed`); null = ainda não carregada. */
+  queue: QueueState | null
+  /** Último `budget_updated` do turno corrente. */
+  budget: BudgetState | null
+  /** Motivo do último `turn_paused` (limpo quando um turno novo começa). */
+  paused: PauseReason | null
+  /** Memórias salvas a partir deste chat (carregadas + `memory_saved`), por criação. */
+  memories: MemoryMark[]
+  /** Último `reasoning_status` do chat. */
+  reasoning: ReasoningStatus | null
 }
+
+export interface MemoryMark {
+  toolCallId: string
+  instruction: Instruction
+  created: boolean
+  /** Quando o evento chegou (ms), para o destaque. */
+  at: number
+  /** seq da última mensagem quando chegou (âncora quando a tool call não é conhecida). */
+  afterSeq: number
+  /** Desfeita via `memory.undo`. */
+  undone: boolean
+}
+
+export interface ReasoningStatus {
+  requestId: string
+  requested: ReasoningLevel | null
+  confirmed: boolean
+}
+
+export interface ModelSwitchMark {
+  afterSeq: number
+  from: string | null
+  to: string
+  /** Janela do modelo novo, quando o engine informa. */
+  window: number | null
+}
+
+export interface BudgetState {
+  used: number
+  budget: number | null
+  iterations: number
+  maxIterations: number | null
+}
+
+export type PauseReason = 'budget' | 'iterations'
 
 export function initialChatState(status: ChatStatus = 'idle'): ChatViewState {
   return {
@@ -34,8 +82,71 @@ export function initialChatState(status: ChatStatus = 'idle'): ChatViewState {
     lastError: null,
     modelSwitches: [],
     compacting: false,
-    compactions: []
+    compactions: [],
+    queue: null,
+    budget: null,
+    paused: null,
+    memories: [],
+    reasoning: null
   }
+}
+
+/** Aplica uma mudança local a um card de memória (editado → nova instrução; desfeito). */
+export function updateMemoryMark(
+  s: ChatViewState,
+  toolCallId: string,
+  patch: Partial<Pick<MemoryMark, 'instruction' | 'undone'>>
+): ChatViewState {
+  if (!s.memories.some((m) => m.toolCallId === toolCallId)) return s
+  return {
+    ...s,
+    memories: s.memories.map((m) => (m.toolCallId === toolCallId ? { ...m, ...patch } : m))
+  }
+}
+
+/**
+ * seq da mensagem depois da qual uma memória salva vai na timeline: a última mensagem do request
+ * que a salvou (`origin.requestId`); sem ele, a última mensagem criada até `createdAt`; 0 = topo.
+ */
+export function memoryAnchorSeq(messages: StoredMessage[], inst: Instruction): number {
+  const requestId = inst.origin?.requestId ?? null
+  let byRequest = 0
+  let byTime = 0
+  for (const m of messages) {
+    if (requestId && m.requestId === requestId) byRequest = Math.max(byRequest, m.seq)
+    if (m.createdAt <= inst.createdAt) byTime = Math.max(byTime, m.seq)
+  }
+  return byRequest || byTime
+}
+
+/**
+ * Junta as memórias salvas a partir deste chat (`instructions.list` com `kind: 'memory'`) aos
+ * cards; dedupe por id da instrução (um card por memória; o que chegou por evento vence).
+ * Chame depois de hidratar as mensagens, para ancorar pela ordem de criação.
+ */
+export function hydrateMemories(
+  s: ChatViewState,
+  list: Instruction[],
+  chatId: string
+): ChatViewState {
+  const known = new Set(s.memories.map((m) => m.instruction.id))
+  const add: MemoryMark[] = list
+    .filter((i) => i.kind === 'memory' && i.origin?.chatId === chatId && !known.has(i.id))
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .map((i) => ({
+      toolCallId: `memory:${i.id}`,
+      instruction: i,
+      created: i.createdAt === i.updatedAt,
+      // Antigas: sem destaque.
+      at: i.updatedAt,
+      afterSeq: memoryAnchorSeq(s.messages, i),
+      undone: false
+    }))
+  if (add.length === 0) return s
+  const memories = [...add, ...s.memories].sort(
+    (a, b) => a.instruction.createdAt - b.instruction.createdAt
+  )
+  return { ...s, memories }
 }
 
 function mergeMessages(list: StoredMessage[], add: StoredMessage[]): StoredMessage[] {
@@ -68,6 +179,11 @@ function mergeCompactions(list: CompactionRecord[], add: CompactionRecord[]): Co
 /** Junta o resultado de `compaction.list` com o que já chegou por evento. */
 export function hydrateCompactions(s: ChatViewState, records: CompactionRecord[]): ChatViewState {
   return { ...s, compactions: mergeCompactions(records, s.compactions) }
+}
+
+/** Junta o resultado de `queue.get`; um `queue_changed` já recebido vence a lista. */
+export function hydrateQueue(s: ChatViewState, queue: QueueState): ChatViewState {
+  return s.queue ? s : { ...s, queue }
 }
 
 export const TRIGGER_LABEL: Record<CompactionTrigger, string> = {
@@ -122,7 +238,13 @@ export function buildTimeline(
   return keyed.sort((a, b) => a.key - b.key || a.order - b.order).map((k) => k.item)
 }
 
-export function applyEngineEvent(s: ChatViewState, e: EngineEvent, chatId: string): ChatViewState {
+export function applyEngineEvent(
+  s: ChatViewState,
+  e: EngineEvent,
+  chatId: string,
+  now: number = Date.now()
+): ChatViewState {
+  if (e.type === 'queue_changed') return e.queue.chatId === chatId ? { ...s, queue: e.queue } : s
   if (!('chatId' in e) || e.chatId !== chatId) return s
   switch (e.type) {
     case 'chat_status_changed':
@@ -133,14 +255,16 @@ export function applyEngineEvent(s: ChatViewState, e: EngineEvent, chatId: strin
         ...s,
         messages: mergeMessages(s.messages, [m]),
         streaming: m.message.role === 'assistant' ? null : s.streaming,
-        lastError: m.message.role === 'user' ? null : s.lastError
+        lastError: m.message.role === 'user' ? null : s.lastError,
+        paused: m.message.role === 'user' ? null : s.paused
       }
     }
     case 'turn_started':
       return {
         ...s,
         streaming: { requestId: e.requestId, text: '', reasoning: '', model: e.model },
-        lastError: null
+        lastError: null,
+        paused: null
       }
     case 'text_delta':
     case 'reasoning_delta': {
@@ -179,8 +303,23 @@ export function applyEngineEvent(s: ChatViewState, e: EngineEvent, chatId: strin
     case 'provider_switched':
       return {
         ...s,
-        modelSwitches: [...s.modelSwitches, { afterSeq: lastSeq(s), from: e.from, to: e.to }]
+        modelSwitches: [
+          ...s.modelSwitches,
+          { afterSeq: lastSeq(s), from: e.from, to: e.to, window: e.window ?? null }
+        ]
       }
+    case 'budget_updated':
+      return {
+        ...s,
+        budget: {
+          used: e.used,
+          budget: e.budget,
+          iterations: e.iterations,
+          maxIterations: e.maxIterations
+        }
+      }
+    case 'turn_paused':
+      return { ...s, streaming: null, paused: e.reason }
     case 'turn_finished':
       return { ...s, streaming: null }
     case 'turn_error':
@@ -199,6 +338,30 @@ export function applyEngineEvent(s: ChatViewState, e: EngineEvent, chatId: strin
         compactions: mergeCompactions(s.compactions, [e.compaction])
       }
     }
+    case 'memory_saved': {
+      const mark: MemoryMark = {
+        toolCallId: e.toolCallId,
+        instruction: e.instruction,
+        created: e.created,
+        at: now,
+        afterSeq: lastSeq(s),
+        undone: false
+      }
+      const i = s.memories.findIndex((m) => m.toolCallId === e.toolCallId)
+      if (i >= 0)
+        return {
+          ...s,
+          memories: s.memories.map((m, j) => (j === i ? { ...mark, afterSeq: m.afterSeq } : m))
+        }
+      // Mesma memória já mostrada (carregada ou de outra tool call): um card só, no ponto novo.
+      const rest = s.memories.filter((m) => m.instruction.id !== e.instruction.id)
+      return { ...s, memories: [...rest, mark] }
+    }
+    case 'reasoning_status':
+      return {
+        ...s,
+        reasoning: { requestId: e.requestId, requested: e.requested, confirmed: e.confirmed }
+      }
     case 'compaction_failed':
       return {
         ...s,

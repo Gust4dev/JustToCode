@@ -11,6 +11,21 @@ export interface LoadedInstructions {
   text: string
 }
 
+/** Um arquivo de topo (global da config ou `AGENTS.md`/`CLAUDE.md` do projeto) já expandido. */
+export interface InstructionSection {
+  path: string
+  scope: EcosystemScope
+  /** Texto com imports resolvidos, sem espaços nas pontas (nunca vazio). */
+  text: string
+}
+
+/** Formato de cada seção no prompt (igual ao `text` de `loadInstructions`). */
+export const sectionText = (path: string, text: string): string => `Contents of ${path}:\n\n${text}`
+
+interface Computed extends LoadedInstructions {
+  sections: InstructionSection[]
+}
+
 const IMPORT_LINE = /^\s*@(\S+)\s*$/
 
 function readText(p: string): string | null {
@@ -26,10 +41,7 @@ function resolveImport(spec: string, fromFile: string): string {
   return isAbsolute(expanded) ? resolve(expanded) : resolve(dirname(fromFile), expanded)
 }
 
-function compute(
-  projectRoot: string,
-  globalFiles: string[]
-): LoadedInstructions & { deps: string[] } {
+function compute(projectRoot: string, globalFiles: string[]): Computed & { deps: string[] } {
   const files: InstructionFile[] = []
   const seen = new Set<string>()
   const deps: string[] = []
@@ -60,7 +72,7 @@ function compute(
     return out.join('\n')
   }
 
-  const sections: string[] = []
+  const sections: InstructionSection[] = []
   const top: { path: string; scope: EcosystemScope }[] = [
     ...globalFiles.map((f) => ({ path: resolve(expandHome(f)), scope: 'global' as const })),
     ...PROJECT_INSTRUCTION_FILES.map((f) => ({
@@ -70,21 +82,40 @@ function compute(
   ]
   for (const t of top) {
     const text = load(t.path, t.scope, 0)
-    if (text !== null && text.trim()) sections.push(`Contents of ${t.path}:\n\n${text.trim()}`)
+    if (text !== null && text.trim())
+      sections.push({ path: t.path, scope: t.scope, text: text.trim() })
   }
-  return { files, text: sections.join('\n\n'), deps }
+  const joined = sections.map((x) => sectionText(x.path, x.text)).join('\n\n')
+  return { files, text: joined, sections, deps }
 }
 
-const cache = new MtimeCache<LoadedInstructions>()
+const cache = new MtimeCache<Computed>()
+
+function computeCached(projectRoot: string, globalFiles: string[]): Computed {
+  const key = JSON.stringify([pathKey(projectRoot), globalFiles])
+  return cache.get(key, () => {
+    const { deps, ...value } = compute(projectRoot, globalFiles)
+    return { value, deps }
+  })
+}
 
 /**
  * Instruções globais (na ordem da config) + `AGENTS.md`/`CLAUDE.md` da raiz do projeto,
  * com imports `@caminho` resolvidos (até 5 níveis, sem ciclos). Somente leitura.
  */
 export function loadInstructions(projectRoot: string, globalFiles: string[]): LoadedInstructions {
-  const key = JSON.stringify([pathKey(projectRoot), globalFiles])
-  return cache.get(key, () => {
-    const { files, text, deps } = compute(projectRoot, globalFiles)
-    return { value: { files, text }, deps }
-  })
+  const { files, text } = computeCached(projectRoot, globalFiles)
+  return { files, text }
+}
+
+/**
+ * Mesmos arquivos de `loadInstructions`, separados por arquivo de topo (imports já dentro do texto
+ * de quem importou; cada arquivo entra uma vez só). A lista devolvida é a mesma enquanto o cache
+ * por mtime não invalidar (serve de chave de memo).
+ */
+export function loadInstructionSections(
+  projectRoot: string,
+  globalFiles: string[]
+): InstructionSection[] {
+  return computeCached(projectRoot, globalFiles).sections
 }

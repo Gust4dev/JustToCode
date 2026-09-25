@@ -58,6 +58,7 @@ export function createOpenAiClient(getConfig: () => AppConfig): ModelClient {
           model: req.model,
           messages: req.messages.map(toWireMessage),
           ...(tools.length ? { tools } : {}),
+          ...(req.reasoning ? { reasoning_effort: req.reasoning } : {}),
           stream: true,
           stream_options: { include_usage: true }
         },
@@ -100,10 +101,12 @@ export function createOpenAiClient(getConfig: () => AppConfig): ModelClient {
           if (choice.finish_reason) finishReason = choice.finish_reason
         }
         if (chunk.usage) {
+          const rt = chunk.usage.completion_tokens_details?.reasoning_tokens
           yield {
             type: 'usage',
             promptTokens: chunk.usage.prompt_tokens ?? 0,
-            completionTokens: chunk.usage.completion_tokens ?? 0
+            completionTokens: chunk.usage.completion_tokens ?? 0,
+            ...(typeof rt === 'number' ? { reasoningTokens: rt } : {})
           }
         }
       }

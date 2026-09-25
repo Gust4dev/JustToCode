@@ -133,7 +133,7 @@ describe('applyEngineEvent', () => {
       { type: 'message_added', chatId: C, message: msg('m1', 1, 'user', 'oi') },
       { type: 'provider_switched', chatId: C, from: 'a/x', to: 'b/y' }
     ])
-    expect(s.modelSwitches).toEqual([{ afterSeq: 1, from: 'a/x', to: 'b/y' }])
+    expect(s.modelSwitches).toEqual([{ afterSeq: 1, from: 'a/x', to: 'b/y', window: null }])
   })
 
   it('evento de outro chat é ignorado', () => {

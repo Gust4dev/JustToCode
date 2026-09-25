@@ -20,6 +20,38 @@ export interface Chat {
   permissionMode: PermissionMode
   status: ChatStatus
   createdAt: number
+  groupId: string | null
+  continuedFromChatId: string | null
+  /** null = sem limite; padrão 50. */
+  maxIterations: number | null
+  tokenBudget: number | null
+  settings: ChatSettings
+  lastReportedModel: string | null
+}
+
+export type ReasoningLevel = 'low' | 'medium' | 'high'
+
+export interface ChatSettings {
+  reasoning: ReasoningLevel | null
+  subagentCombo: string | null
+  subagentReasoning: ReasoningLevel | null
+  summarizerModel: string | null
+}
+
+export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
+  reasoning: null,
+  subagentCombo: null,
+  subagentReasoning: null,
+  summarizerModel: null
+}
+
+export interface ChatGroup {
+  id: string
+  projectId: string
+  name: string
+  sortOrder: number
+  collapsed: boolean
+  createdAt: number
 }
 
 export interface ToolCallSpec {
@@ -222,6 +254,101 @@ export interface RevertConflict {
   merged: string
 }
 
+export interface QueuedMessage {
+  id: string
+  chatId: string
+  text: string
+  attachments: AttachmentMeta[]
+  position: number
+  createdAt: number
+}
+
+export interface QueueState {
+  chatId: string
+  paused: boolean
+  pauseReason: string | null
+  items: QueuedMessage[]
+}
+
+export type InstructionKind = 'rule' | 'command' | 'skill' | 'memory'
+export type InstructionScope = 'global' | 'project' | 'group' | 'chat'
+export type InstructionTrigger = 'always' | 'glob' | 'model' | 'manual'
+export type InstructionSource =
+  | { type: 'app' }
+  | { type: 'file'; path: string }
+  | { type: 'plugin'; marketplace: string; plugin: string; path: string }
+  | { type: 'github'; url: string; ref: string; path: string; sha: string }
+
+export interface MemoryOrigin {
+  chatId: string
+  requestId: string | null
+  thirdParty: string[]
+}
+
+export interface Instruction {
+  id: string
+  kind: InstructionKind
+  scope: InstructionScope
+  /** projectId | groupId | chatId (null em global). */
+  scopeId: string | null
+  /** Também é o nome do /comando e do @nome. */
+  name: string
+  description: string
+  trigger: InstructionTrigger
+  globs: string[]
+  body: string
+  format: 'md' | 'toml'
+  source: InstructionSource
+  enabled: boolean
+  /** true para descobertos (arquivo/plugin): só liga/desliga. */
+  readonly: boolean
+  /** Memórias. */
+  origin: MemoryOrigin | null
+  createdAt: number
+  updatedAt: number
+}
+
+export interface ActiveInstructionItem {
+  id: string
+  name: string
+  kind: InstructionKind
+  scope: InstructionScope
+  trigger: InstructionTrigger
+  reason: string
+  tokens: number
+  included: 'content' | 'listed' | 'dropped'
+}
+
+export interface ActiveInstructions {
+  chatId: string
+  items: ActiveInstructionItem[]
+  alwaysTokens: number
+  alwaysBudget: number
+  overBudget: boolean
+}
+
+export interface SettingSuggestion {
+  key: keyof ChatSettings | 'tokenBudget' | 'maxIterations'
+  value: string | number | null
+  label: string
+}
+
+export interface InstallPreviewItem {
+  path: string
+  kind: InstructionKind
+  name: string
+  format: 'md' | 'toml'
+  content: string
+  suspicious: { line: number; col: number; codepoint: string; name: string }[]
+}
+
+export interface InstallPreview {
+  url: string
+  ref: string
+  sha: string
+  items: InstallPreviewItem[]
+}
+
 export interface AppConfig {
   routerBaseUrl: string
   routerApiKey: string
@@ -250,7 +377,19 @@ export interface AppConfig {
   agentRoots: string[]
   /** Raízes de plugins no layout do cache do Claude Code (somente leitura). `~` é expandido no uso. */
   pluginRoots: string[]
+  /** Pastas de regras globais (`.md`/`.toml` em qualquer nível; somente leitura). `~` é expandido no uso. */
+  ruleRoots: string[]
+  /** Limite padrão de iterações por turno (chats novos). */
+  defaultMaxIterations: number
+  /** Orçamento de tokens das instruções `always`. */
+  alwaysInstructionBudgetTokens: number
+  /** Linhas máximas do índice de memórias. */
+  memoryIndexMaxLines: number
+  /** Como o reasoning do chat vai ao router: `reasoning_effort`, sufixo `(level)` no modelo ou ambos. */
+  reasoningStyle: ReasoningStyle
 }
+
+export type ReasoningStyle = 'param' | 'suffix' | 'both'
 
 export const DEFAULT_CONFIG: AppConfig = {
   routerBaseUrl: 'http://localhost:20128/v1',
@@ -270,7 +409,12 @@ export const DEFAULT_CONFIG: AppConfig = {
   skillRoots: ['~/.claude/skills', '~/.agents/skills'],
   commandRoots: ['~/.claude/commands'],
   agentRoots: ['~/.claude/agents'],
-  pluginRoots: ['~/.claude/plugins/cache']
+  pluginRoots: ['~/.claude/plugins/cache'],
+  ruleRoots: ['~/.claude/rules'],
+  defaultMaxIterations: 50,
+  alwaysInstructionBudgetTokens: 8000,
+  memoryIndexMaxLines: 150,
+  reasoningStyle: 'param'
 }
 
 export const CHAT_COLORS = [

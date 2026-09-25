@@ -1,5 +1,6 @@
 import type {
   AppConfig,
+  Chat,
   ChatMessage,
   StoredMessage,
   ChatStatus,
@@ -7,6 +8,7 @@ import type {
   ContentPart,
   ContextState,
   Project,
+  ReasoningLevel,
   ToolCallRecord,
   ToolCallSpec,
   ToolCallStatus
@@ -19,6 +21,7 @@ import type { RequestRepo } from '../repo/requests'
 import type { ToolCallRepo } from '../repo/toolCalls'
 import type { ModelClient, ChatRequest } from '../model/types'
 import { toModelError, type ModelError } from '../model/errors'
+import { withReasoning } from '../model/reasoning'
 import type { Tool, ToolContext, ToolResult } from '../tools/types'
 import type { ChangeCapture, PermissionGate } from '../services/types'
 import { estimateMessage, estimateMessages, estimateText } from '../context/tokenizer'
@@ -34,8 +37,12 @@ import {
 import { TOOL_IMAGES_TEXT } from '../context/select'
 import { activeHistory, buildRequest, historyMessages, toRequestTool } from './buildRequest'
 import { buildSystemPrompt } from './systemPrompt'
-import { loadInstructions } from '../ecosystem/instructions'
-import { discoverSkills } from '../ecosystem/skills'
+import {
+  createInstructionResolver,
+  renderInstructionText,
+  type InstructionContext,
+  type InstructionResolver
+} from '../ecosystem/resolver'
 import { discoverAgents } from '../ecosystem/agents'
 import { TASK_TOOL } from '../tools/task'
 import { capToolOutput, summarizeToolOutput } from './toolOutput'
@@ -80,17 +87,25 @@ export interface EngineDeps {
   retryDelaysMs?: number[]
   /** Assina mudanças de config (invalida o cache de modelos/janelas). */
   onConfig?: (listener: () => void) => unknown
+  /** Resolvedor de instruções (banco + disco); ausente = só o disco, sem caminhos tocados. */
+  instructions?: InstructionResolver
 }
+
+/** Ferramentas cujo `path` alimenta os gatilhos `glob` (`chat_touched_paths`). */
+const TOUCHING_TOOLS = new Set(['read_file', 'write_file', 'edit_file'])
 
 /** Estado compartilhado entre turnos, mantido pelo engine. */
 export interface EngineState {
   setStatus(chatId: string, status: ChatStatus): void
   lastReportedModel(chatId: string): string | null
   setReportedModel(chatId: string, model: string): void
-  /** Última janela efetiva conhecida do modelo/combo (via ComboResolver). */
-  windowFor(model: string): WindowInfo
+  /**
+   * Última janela conhecida (via ComboResolver): sem `reported`, a do primeiro membro da combo;
+   * com `reported`, a do modelo que respondeu (window null se desconhecida).
+   */
+  windowFor(model: string, reported?: string | null): WindowInfo
   /** Atualiza a janela via ComboResolver (invalida se a config do router mudou; espera no máx. alguns segundos). */
-  ensureModels(model: string): Promise<void>
+  ensureModels(model: string, reported?: string | null): Promise<void>
   setContext(chatId: string, c: ContextState): void
   lastContext(chatId: string): ContextState | null
 }
@@ -98,6 +113,20 @@ export interface EngineState {
 export interface WindowInfo {
   window: number | null
   limitingModel: string | null
+}
+
+/** Janela do turno: a do último modelo reportado no chat (sticky); senão/desconhecida, a do primário. */
+export async function chatWindow(
+  s: EngineState,
+  model: string,
+  reported: string | null
+): Promise<WindowInfo> {
+  await s.ensureModels(model)
+  const primary = s.windowFor(model)
+  if (!reported) return primary
+  await s.ensureModels(model, reported)
+  const r = s.windowFor(model, reported)
+  return r.window !== null ? r : primary
 }
 
 export function shellLabel(pref: AppConfig['shell']): string {
@@ -112,18 +141,42 @@ export interface SystemOptions {
   agentPrompt?: string
 }
 
-export function systemFor(project: Project, cfg: AppConfig, o: SystemOptions = {}): string {
-  // Instruções e skills do usuário: somente leitura, com cache por mtime; falha nunca derruba o turno.
+/** Resolvedor sem banco (só o que está no disco), para quem não injeta um. */
+let diskOnlyResolver: InstructionResolver | null = null
+
+export interface SystemContext {
+  /** Resolvedor do host (banco, toggles, caminhos tocados, provedores). */
+  resolver?: InstructionResolver
+  /** Chat do turno (escopos grupo/chat e caminhos tocados). */
+  chat?: Pick<Chat, 'id' | 'groupId'> | null
+}
+
+export function systemFor(
+  project: Project,
+  cfg: AppConfig,
+  o: SystemOptions = {},
+  sc: SystemContext = {}
+): string {
+  // Instruções e skills vêm do resolvedor (disco com cache por mtime + banco); falha nunca derruba o turno.
+  const resolver = sc.resolver ?? (diskOnlyResolver ??= createInstructionResolver())
+  const ictx: InstructionContext = {
+    projectRoot: project.path,
+    projectId: project.id,
+    groupId: sc.chat?.groupId ?? null,
+    chatId: sc.chat?.id ?? null,
+    cfg,
+    subagent: !!o.subagent
+  }
   let instructions = ''
   let skills: { name: string; description: string }[] = []
+  let sections: string[] = []
   try {
-    instructions = loadInstructions(project.path, cfg.instructionFiles ?? []).text
+    const r = resolver.resolve(ictx)
+    instructions = renderInstructionText(r.always)
+    skills = r.listed.map((i) => ({ name: i.name, description: i.description }))
+    sections = resolver.sections(ictx)
   } catch {
     instructions = ''
-  }
-  try {
-    skills = discoverSkills(project.path, cfg.skillRoots ?? [], cfg.pluginRoots ?? [])
-  } catch {
     skills = []
   }
   let subagents: { name: string; description: string }[] = []
@@ -141,7 +194,8 @@ export function systemFor(project: Project, cfg: AppConfig, o: SystemOptions = {
     instructions,
     skills,
     subagents,
-    agentPrompt: o.agentPrompt
+    agentPrompt: o.agentPrompt,
+    sections
   })
 }
 
@@ -196,6 +250,8 @@ type StreamOutcome =
       reasoning: string
       calls: ToolCallSpec[]
       reported: string | null
+      /** Tokens do request (usage real; estimativa quando o router não mandou usage). */
+      used?: number
     }
   | { kind: 'error'; requestId: string; error: ModelError }
 
@@ -255,10 +311,12 @@ export async function runTurn(
     ctx.emit({ type: 'turn_error', chatId, message: 'Cancelado pelo usuário', code: 'CANCELLED' })
   }
 
+  /** `model`: combo sem sufixo (janela); `reasoning`: nível pedido (evento `reasoning_status`). */
   async function stream(
     req: ChatRequest,
     estTokens: number,
-    win: WindowInfo
+    win: WindowInfo,
+    rs: { model: string; reasoning: ReasoningLevel | null }
   ): Promise<StreamOutcome> {
     const window = win.window
     const payloadBlobHash = ctx.blobs.put(JSON.stringify(req))
@@ -276,6 +334,7 @@ export async function runTurn(
       let calls: ToolCallSpec[] = []
       let reported: string | null = null
       let usage: { promptTokens: number; completionTokens: number } | null = null
+      let reasoningTokens = 0
       let emitted = false
       try {
         for await (const ev of d.model.stream(req, signal)) {
@@ -291,13 +350,22 @@ export async function runTurn(
             calls = ev.calls
           } else if (ev.type === 'usage') {
             usage = { promptTokens: ev.promptTokens, completionTokens: ev.completionTokens }
+            reasoningTokens = Math.max(reasoningTokens, ev.reasoningTokens ?? 0)
           } else if (ev.type === 'model_reported') {
             reported = ev.model
             const prev = s.lastReportedModel(chatId)
             if (prev !== ev.model) {
               s.setReportedModel(chatId, ev.model)
               if (prev !== null) {
-                ctx.emit({ type: 'provider_switched', chatId, from: prev, to: ev.model })
+                // Janela que os próximos requests vão usar (a do modelo novo, ou a do primário).
+                const next = await chatWindow(s, rs.model, ev.model)
+                ctx.emit({
+                  type: 'provider_switched',
+                  chatId,
+                  from: prev,
+                  to: ev.model,
+                  window: next.window
+                })
               }
             }
           }
@@ -323,6 +391,16 @@ export async function runTurn(
         completionTokens: usage?.completionTokens ?? null,
         error: signal.aborted ? 'cancelled' : null
       })
+      if (rs.reasoning && !signal.aborted) {
+        // Confirmado só com evidência: reasoning no stream ou `reasoning_tokens` > 0.
+        ctx.emit({
+          type: 'reasoning_status',
+          chatId,
+          requestId: rec.id,
+          requested: rs.reasoning,
+          confirmed: reasoning.length > 0 || reasoningTokens > 0
+        })
+      }
       if (usage) {
         const context: ContextState = {
           estTokens,
@@ -336,7 +414,10 @@ export async function runTurn(
       if (signal.aborted) {
         return { kind: 'cancelled', requestId: rec.id, text, reasoning, calls: [], reported }
       }
-      return { kind: 'ok', requestId: rec.id, text, reasoning, calls, reported }
+      const used = usage
+        ? usage.promptTokens + usage.completionTokens
+        : estTokens + estimateText(text + reasoning + (calls.length ? JSON.stringify(calls) : ''))
+      return { kind: 'ok', requestId: rec.id, text, reasoning, calls, reported, used }
     }
   }
 
@@ -355,7 +436,7 @@ export async function runTurn(
           toolName: p.spec.function.name,
           toolCallId: p.record.id,
           output: full,
-          models: summarizerModels(cfg, combo),
+          models: summarizerModels(cfg, combo, chat?.settings.summarizerModel),
           signal
         })
         return { content, truncated: true }
@@ -402,7 +483,9 @@ export async function runTurn(
       tool,
       args: p.args,
       toolCallId: p.record.id,
-      targetPath: tool.kind === 'edit' ? editTarget(project.path, p.args) : undefined
+      // edit: colisão entre chats; read: leitura de caminho sensível (sempre confirmar).
+      targetPath:
+        tool.kind === 'edit' || tool.kind === 'read' ? editTarget(project.path, p.args) : undefined
     }
     if (d.gate.decide(input) === 'ask') {
       const waiting = d.toolCalls.update(p.record.id, { status: 'awaiting_approval' })
@@ -436,6 +519,10 @@ export async function runTurn(
       result = { content: e instanceof Error ? e.message : String(e), isError: true }
     }
     const isError = result.isError === true
+    if (!isError && TOUCHING_TOOLS.has(tool.name) && d.instructions) {
+      const rel = editTarget(project.path, p.args)
+      if (rel) d.instructions.recordTouched(chatId, rel)
+    }
     return {
       content: result.content,
       isError,
@@ -544,24 +631,35 @@ export async function runTurn(
     }
   }
 
+  // Contínuo: tokens gastos neste turno (usage real ou estimativa) e iterações feitas.
+  let used = 0
+  const pause = (reason: 'budget' | 'iterations'): void => {
+    s.setStatus(chatId, 'idle')
+    ctx.emit({ type: 'turn_paused', chatId, reason })
+  }
+
   try {
-    for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+    for (let iter = 0; ; iter++) {
       if (signal.aborted) return finishCancelled()
       const chat = d.chats.get(chatId)
       if (!chat) return // chat excluído no meio do turno
+      // Limites lidos a cada iteração (o usuário pode mudar no meio do turno); null = sem limite.
+      if (chat.maxIterations !== null && iter >= chat.maxIterations) return pause('iterations')
+      if (chat.tokenBudget !== null && iter > 0 && used >= chat.tokenBudget) return pause('budget')
       const project = d.projects.get(chat.projectId)
       if (!project) return fail('Projeto não encontrado', 'NOT_FOUND')
       const cfg = d.getConfig()
       const model = chat.combo || cfg.defaultCombo
       if (!model) return fail('Escolha um combo para este chat nas configurações', 'NO_MODEL')
 
-      await s.ensureModels(model)
-      const win = s.windowFor(model)
+      const win = await chatWindow(s, model, s.lastReportedModel(chatId))
       const window = win.window
-      const system = systemFor(project, cfg, opts.subagent)
+      // Resolvido uma vez por iteração (disco em cache por mtime; banco em poucas consultas).
+      const system = systemFor(project, cfg, opts.subagent, { resolver: d.instructions, chat })
       const estimate = (h: StoredMessage[]): number => estimateHistory(model, system, allTools, h)
       const cd = compactionDeps(d)
-      const models = summarizerModels(cfg, model)
+      const models = summarizerModels(cfg, model, chat.settings.summarizerModel)
+      const reasoningLevel = chat.settings.reasoning ?? null
 
       if (window !== null) {
         try {
@@ -591,13 +689,17 @@ export async function runTurn(
 
       let out: StreamOutcome
       for (let overflowRetry = 0; ; overflowRetry++) {
-        const req = buildRequest({
-          model,
-          system,
-          history: d.messages.list(chatId),
-          tools: allTools,
-          blobs: ctx.blobs
-        })
+        const req = withReasoning(
+          buildRequest({
+            model,
+            system,
+            history: d.messages.list(chatId),
+            tools: allTools,
+            blobs: ctx.blobs
+          }),
+          reasoningLevel,
+          cfg.reasoningStyle
+        )
         const estTokens = estimateRequest(req)
         const context: ContextState = {
           estTokens,
@@ -608,7 +710,7 @@ export async function runTurn(
         s.setContext(chatId, context)
         ctx.emit({ type: 'context_updated', chatId, context })
 
-        out = await stream(req, estTokens, win)
+        out = await stream(req, estTokens, win, { model, reasoning: reasoningLevel })
         if (out.kind !== 'error' || !out.error.o.isContextLength || overflowRetry > 0) break
         // Overflow: compacta mais agressivo e tenta a mesma iteração uma única vez.
         let compacted: CompactionRecord | null = null
@@ -646,6 +748,16 @@ export async function runTurn(
         return finishCancelled()
       }
 
+      used += out.used ?? 0
+      ctx.emit({
+        type: 'budget_updated',
+        chatId,
+        used,
+        budget: chat.tokenBudget,
+        iterations: iter + 1,
+        maxIterations: chat.maxIterations
+      })
+
       const assistant: ChatMessage = {
         role: 'assistant',
         content: out.text || null,
@@ -668,7 +780,6 @@ export async function runTurn(
       await runTools(stored.id, out.calls, project)
       if (signal.aborted) return finishCancelled()
     }
-    fail(`Limite de ${MAX_ITERATIONS} iterações atingido neste turno`, 'MAX_ITERATIONS')
   } catch (e) {
     if (signal.aborted) return finishCancelled()
     fail(e instanceof Error ? e.message : String(e), 'INTERNAL')

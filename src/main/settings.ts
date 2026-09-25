@@ -17,6 +17,11 @@ type StoredSettings = Partial<Omit<AppConfig, 'routerApiKey'>> & {
 
 const KNOWN_KEYS = Object.keys(DEFAULT_CONFIG) as (keyof AppConfig)[]
 
+/** Valores permitidos de campos enumerados (fora deles, vale o padrão). */
+const ENUMS: Partial<Record<keyof AppConfig, readonly string[]>> = {
+  reasoningStyle: ['param', 'suffix', 'both']
+}
+
 function readStored(file: string): StoredSettings {
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8')) as unknown
@@ -36,7 +41,8 @@ export function loadSettings(file: string, crypto: SecretCodec): AppConfig {
     const ok = Array.isArray(def)
       ? Array.isArray(v) && v.every((x) => typeof x === 'string')
       : v !== undefined && typeof v === typeof def
-    if (ok) {
+    const allowed = ENUMS[k]
+    if (ok && (!allowed || allowed.includes(v as string))) {
       ;(config as unknown as Record<string, unknown>)[k] = v
     }
   }
@@ -59,6 +65,8 @@ export function saveSettings(
 ): AppConfig {
   const next: AppConfig = { ...loadSettings(file, crypto) }
   for (const k of KNOWN_KEYS) {
+    const allowed = ENUMS[k]
+    if (allowed && !allowed.includes(patch[k] as string)) continue
     if (patch[k] !== undefined) (next as unknown as Record<string, unknown>)[k] = patch[k]
   }
   const { routerApiKey, ...rest } = next

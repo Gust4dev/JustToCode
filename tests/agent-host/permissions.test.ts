@@ -7,7 +7,12 @@ import type { HostContext } from '../../src/agent-host/context'
 import type { BlobStore } from '../../src/agent-host/blobs'
 import type { Tool } from '../../src/agent-host/tools/types'
 import type { PermissionGate, PermissionInput } from '../../src/agent-host/services/types'
-import type { Chat, ChatStatus, PermissionMode } from '../../src/shared/domain'
+import {
+  DEFAULT_CHAT_SETTINGS,
+  type Chat,
+  type ChatStatus,
+  type PermissionMode
+} from '../../src/shared/domain'
 import type { EngineEvent } from '../../src/shared/events'
 import { needsAlwaysConfirm } from '../../src/agent-host/permissions/alwaysConfirm'
 import { matchesRule, rulePatternFor } from '../../src/agent-host/permissions/rules'
@@ -63,7 +68,13 @@ function mkChat(id: string, permissionMode: PermissionMode = 'ask'): Chat {
     combo: 'c',
     permissionMode,
     status: 'running',
-    createdAt: 0
+    createdAt: 0,
+    groupId: null,
+    continuedFromChatId: null,
+    maxIterations: 50,
+    tokenBudget: null,
+    settings: { ...DEFAULT_CHAT_SETTINGS },
+    lastReportedModel: null
   })
 }
 const input = (chat: Chat, tool: Tool, args: unknown, toolCallId = 'tc1'): PermissionInput => ({

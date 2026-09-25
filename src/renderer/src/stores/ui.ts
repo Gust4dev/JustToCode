@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 
-/** O que ocupa a área central: a conversa ou a tela Componentes. Não é persistido. */
-export type UiView = 'chat' | 'components'
+/** O que ocupa a área central: a conversa, a tela Componentes ou a tela Instruções. Não é persistido. */
+export type UiView = 'chat' | 'components' | 'instructions'
 
 export interface UiState {
   projectId: string | null

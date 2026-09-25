@@ -76,6 +76,7 @@ async function setup(
     commandRoots: [],
     agentRoots: [],
     pluginRoots: [],
+    ruleRoots: [],
     ...o.cfg
   }
   const db = openDb(join(base, 'db.sqlite'))
@@ -333,7 +334,13 @@ describe('agent engine', () => {
     await waitFor(env.events, isEnd)
     const sw = env.events.filter((e) => e.type === 'provider_switched')
     expect(sw).toEqual([
-      { type: 'provider_switched', chatId: env.chat.id, from: 'fake/model', to: 'outro/model' }
+      {
+        type: 'provider_switched',
+        chatId: env.chat.id,
+        from: 'fake/model',
+        to: 'outro/model',
+        window: env.cfg.unknownWindowFallback
+      }
     ])
   })
 
@@ -367,12 +374,12 @@ describe('agent engine', () => {
     expect(env.services.chats.get(env.chat.id)?.status).toBe('error')
   })
 
-  it('send com o chat ocupado → CHAT_BUSY', async () => {
+  it('send com o chat ocupado → entra na fila (sem erro)', async () => {
     const env = await setup([{ chunks: [chunk.text('pensando...')], hold: true }])
     await env.services.engine.send(env.chat.id, 'um', [])
-    await expect(env.services.engine.send(env.chat.id, 'dois', [])).rejects.toMatchObject({
-      code: 'CHAT_BUSY'
-    })
+    const queued = await env.services.engine.send(env.chat.id, 'dois', [])
+    expect(queued).toMatchObject({ messageId: null })
+    expect(queued.queuedId).toBeTruthy()
     await waitFor(env.events, (e): e is EngineEvent => e.type === 'text_delta')
     env.services.engine.cancel(env.chat.id)
     const end = await waitFor(env.events, isEnd)

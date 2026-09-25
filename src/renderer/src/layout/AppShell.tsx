@@ -10,6 +10,7 @@ import { useUi } from '@renderer/stores/ui'
 import { ChatView } from '@renderer/features/chat/ChatView'
 import { DiffPanel } from '@renderer/features/diff/DiffPanel'
 import { ComponentsView } from '@renderer/features/components/ComponentsView'
+import { InstructionsView } from '@renderer/features/instructions/InstructionsView'
 import { initComponentsFeed } from '@renderer/features/components/componentsStore'
 import { newChat, pickAndOpenProject } from '@renderer/features/projects/actions'
 import { useProjects } from '@renderer/features/projects/store'
@@ -89,6 +90,10 @@ function useProjectData(): void {
       void useProjects.getState().loadChildren(e.chatId)
       return
     }
+    if (e.type === 'chat_updated') {
+      useProjects.getState().chatUpdated(e.chat)
+      return
+    }
     if (e.type !== 'chat_status_changed') return
     if (!useProjects.getState().setChatStatus(e.chatId, e.status)) {
       const pid = useUi.getState().projectId
@@ -119,6 +124,7 @@ export function AppShell(): React.JSX.Element {
 
   let center: React.JSX.Element
   if (view === 'components') center = <ComponentsView />
+  else if (view === 'instructions') center = <InstructionsView />
   else if (!projectId)
     center = (
       <EmptyState

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { Chat } from '@shared/domain'
+import { DEFAULT_CHAT_SETTINGS, type Chat } from '@shared/domain'
 import {
   buildChatTree,
   chatInProject,
@@ -18,7 +18,13 @@ const chat = (id: string, parentChatId: string | null = null, createdAt = 0): Ch
   combo: 'c',
   permissionMode: 'ask',
   status: 'idle',
-  createdAt
+  createdAt,
+  groupId: null,
+  continuedFromChatId: null,
+  maxIterations: 50,
+  tokenBudget: null,
+  settings: { ...DEFAULT_CHAT_SETTINGS },
+  lastReportedModel: null
 })
 
 describe('chatTree', () => {

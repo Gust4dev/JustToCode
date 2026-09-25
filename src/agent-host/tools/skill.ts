@@ -1,6 +1,12 @@
-import type { AppConfig } from '@shared/domain'
+import type { AppConfig, Instruction } from '@shared/domain'
 import { discoverSkills, findSkill, loadSkillBody } from '../ecosystem/skills'
-import type { Tool } from './types'
+import type { Tool, ToolContext } from './types'
+
+/**
+ * Itens `model` resolvidos para o chat (respeita toggles, escopos e precedência).
+ * Sem lookup, a ferramenta usa só a descoberta do disco (comportamento anterior).
+ */
+export type ListedLookup = (ctx: ToolContext) => Instruction[]
 
 export const SKILL_TOOL = 'skill'
 
@@ -9,7 +15,10 @@ interface SkillArgs {
 }
 
 /** Ferramenta `skill`: devolve o corpo (sem frontmatter) de uma skill + a pasta dela. */
-export function createSkillTool(getConfig: () => AppConfig): Tool<SkillArgs> {
+export function createSkillTool(
+  getConfig: () => AppConfig,
+  listed?: ListedLookup
+): Tool<SkillArgs> {
   return {
     name: SKILL_TOOL,
     kind: 'read',
@@ -27,6 +36,20 @@ export function createSkillTool(getConfig: () => AppConfig): Tool<SkillArgs> {
     async run(args, ctx) {
       const name = typeof args?.name === 'string' ? args.name.trim() : ''
       if (!name) return { content: 'Missing required parameter: name', isError: true }
+      if (listed) {
+        const items = listed(ctx)
+        const inst = items.find((i) => i.name === name.replace(/^\//, ''))
+        if (!inst) {
+          return {
+            content: `Unknown skill: ${name}. Available skills: ${items.map((i) => i.name).join(', ') || '(none)'}.`,
+            isError: true
+          }
+        }
+        // Itens do app/GitHub: o corpo vem do banco (sem pasta).
+        if (inst.source.type !== 'file' && inst.source.type !== 'plugin') {
+          return { content: `Skill "${inst.name}"\n\n${inst.body.trim()}` }
+        }
+      }
       const cfg = getConfig()
       const roots = cfg.skillRoots ?? []
       const plugins = cfg.pluginRoots ?? []

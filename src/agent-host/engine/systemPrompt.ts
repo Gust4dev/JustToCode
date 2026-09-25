@@ -12,6 +12,8 @@ export interface SystemPromptInput {
   subagents?: { name: string; description: string }[]
   /** Instruções do agente quando este chat é um subagente (corpo do arquivo do agente). */
   agentPrompt?: string
+  /** Seções extras no fim (provedores do resolvedor de instruções, ex.: `# Memory`). */
+  sections?: string[]
 }
 
 function instructionsBlock(text: string): string[] {
@@ -87,6 +89,7 @@ export function buildSystemPrompt(p: SystemPromptInput): string {
     '- Be concise. Explain what you changed and why, briefly, when you finish.',
     ...skillsBlock(p.skills ?? []),
     ...subagentsBlock(p.subagents ?? []),
-    ...agentBlock(p.agentPrompt ?? '')
+    ...agentBlock(p.agentPrompt ?? ''),
+    ...(p.sections ?? []).flatMap((t) => (t.trim() ? ['', t.trim()] : []))
   ].join('\n')
 }

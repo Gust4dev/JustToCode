@@ -1,5 +1,6 @@
 import type { AttachmentUpload } from '@shared/api'
 import type {
+  Chat,
   ChatMessage,
   ChatStatus,
   CompactionRecord,
@@ -7,12 +8,16 @@ import type {
   ContextState,
   StoredMessage
 } from '@shared/domain'
+import type { EngineEvent } from '@shared/events'
 import { RpcError } from '@shared/rpc'
 import { estimateMessage } from '../context/tokenizer'
 import { compactChat, summarizerModels } from '../context/compaction'
 import { agentPrompt, filterTools, findAgent, availableAgents } from '../ecosystem/agents'
 import { TASK_TOOL, type SubagentRequest } from '../tools/task'
 import type { ToolResult } from '../tools/types'
+import { QueueRepo } from '../repo/queue'
+import { createChatQueue, type ChatQueue } from './queue'
+import { DEFAULT_CHAT_TITLE, generateChatTitle } from './title'
 import {
   compactionDeps,
   estimateHistory,
@@ -29,14 +34,20 @@ export interface AgentEngine {
     chatId: string,
     text: string,
     attachments: AttachmentUpload[]
-  ): Promise<{ messageId: string }>
+  ): Promise<{ messageId: string | null; queuedId: string | null }>
   cancel(chatId: string): void
+  /** Retoma após `turn_paused`: novo turno a partir do histórico (contadores zerados). */
+  continue(chatId: string): void
   context(chatId: string): ContextState
   /** Compactação manual; `CHAT_BUSY` se o chat estiver rodando, `NOTHING_TO_COMPACT` se não há o que resumir. */
   compact(chatId: string): Promise<CompactionRecord>
   isRunning(chatId: string): boolean
   /** Roda um subagente (chat filho) até o fim e devolve o último texto dele (ferramenta `task`). */
   runSubagent(req: SubagentRequest): Promise<ToolResult>
+  /** Fila de mensagens por chat (`queue.*`). */
+  queue: Pick<ChatQueue, 'get' | 'remove' | 'edit' | 'resume'>
+  /** Gera e grava um título para o chat (manual: lança se falhar). */
+  generateTitle(chatId: string): Promise<Chat>
 }
 
 export type { EngineDeps }
@@ -46,6 +57,9 @@ const MAX_TEXT_ATTACHMENT_CHARS = 200_000
 const MODELS_REFETCH_MS = 60_000
 /** Quanto o turno espera pela lista de modelos antes de seguir sem a janela. */
 const MODELS_WAIT_MS = 3000
+/** Chave do cache de janelas: combo (janela do primário) ou combo + modelo reportado. */
+const windowKey = (model: string, reported?: string | null): string =>
+  reported ? `${model}\n${reported}` : model
 
 /** Dimensões a partir do cabeçalho png/jpeg/gif; null quando não reconhece. */
 export function imageSize(buf: Buffer): { width: number; height: number } | null {
@@ -80,7 +94,23 @@ export function imageSize(buf: Buffer): { width: number; height: number } | null
   return null
 }
 
-export function createAgentEngine(d: EngineDeps): AgentEngine {
+export function createAgentEngine(base: EngineDeps): AgentEngine {
+  // Os ganchos de fila/título observam o fim dos turnos (qualquer caminho que rode `runTurn`).
+  let onTurnEvent: (e: EngineEvent) => void = () => {}
+  const d: EngineDeps = {
+    ...base,
+    ctx: {
+      ...base.ctx,
+      emit: (e) => {
+        base.ctx.emit(e)
+        try {
+          onTurnEvent(e)
+        } catch {
+          // gancho nunca derruba o turno
+        }
+      }
+    }
+  }
   const { ctx } = d
   const running = new Map<string, AbortController>()
   const reportedModels = new Map<string, string | null>()
@@ -111,21 +141,26 @@ export function createAgentEngine(d: EngineDeps): AgentEngine {
     },
     lastReportedModel(chatId) {
       if (!reportedModels.has(chatId)) {
-        const last = d.requests
-          .list(chatId)
-          .filter((r) => r.modelReported)
-          .pop()
-        reportedModels.set(chatId, last?.modelReported ?? null)
+        // Persistido em `chats.last_reported_model`; chats antigos caem no último request.
+        const persisted = d.chats.get(chatId)?.lastReportedModel ?? null
+        const last = persisted
+          ? null
+          : d.requests
+              .list(chatId)
+              .filter((r) => r.modelReported)
+              .pop()
+        reportedModels.set(chatId, persisted ?? last?.modelReported ?? null)
       }
       return reportedModels.get(chatId) ?? null
     },
     setReportedModel(chatId, model) {
       reportedModels.set(chatId, model)
+      if (d.chats.get(chatId)) d.chats.setLastReportedModel(chatId, model)
     },
-    windowFor(model) {
-      return windows.get(model) ?? { window: null, limitingModel: null }
+    windowFor(model, reported) {
+      return windows.get(windowKey(model, reported)) ?? { window: null, limitingModel: null }
     },
-    async ensureModels(model) {
+    async ensureModels(model, reported) {
       const cfg = d.getConfig()
       const key = `${cfg.routerBaseUrl}
 ${cfg.routerApiKey}
@@ -135,23 +170,30 @@ ${cfg.routerDbPath}`
         models.key = key
       }
       // Router fora do ar: tenta de novo no máximo 1×/min por modelo.
-      const failed = models.failedAt.get(model)
+      const wk = windowKey(model, reported)
+      const failed = models.failedAt.get(wk)
       if (failed !== undefined && Date.now() - failed < MODELS_REFETCH_MS) return
-      let inflight = models.inflight.get(model)
+      let inflight = models.inflight.get(wk)
       if (!inflight) {
-        inflight = d.resolver
-          .effectiveWindow(model)
+        const resolve: Promise<WindowInfo> = reported
+          ? d.resolver
+              .windowForReported(model, reported)
+              .then((window) => ({ window, limitingModel: window !== null ? reported : null }))
+          : d.resolver
+              .primaryWindow(model)
+              .then((p) => ({ window: p.window, limitingModel: p.model }))
+        inflight = resolve
           .then((w) => {
-            if (models.key === key) windows.set(model, w)
-            models.failedAt.delete(model)
+            if (models.key === key) windows.set(wk, w)
+            models.failedAt.delete(wk)
           })
           .catch(() => {
-            models.failedAt.set(model, Date.now())
+            models.failedAt.set(wk, Date.now())
           })
           .finally(() => {
-            models.inflight.delete(model)
+            models.inflight.delete(wk)
           })
-        models.inflight.set(model, inflight)
+        models.inflight.set(wk, inflight)
       }
       let timer: NodeJS.Timeout | undefined
       await Promise.race([
@@ -248,8 +290,13 @@ ${cfg.routerDbPath}`
       agentName: def.name,
       title: req.description,
       color: parent.color,
-      combo: def.combo || parent.combo,
-      permissionMode: parent.permissionMode
+      // Ajustes do chat pai: combo e reasoning dos subagentes (o combo do chat vence o do agente).
+      combo: parent.settings.subagentCombo || def.combo || parent.combo,
+      permissionMode: parent.permissionMode,
+      settings: {
+        reasoning: parent.settings.subagentReasoning,
+        summarizerModel: parent.settings.summarizerModel
+      }
     })
     const controller = new AbortController()
     running.set(child.id, controller)
@@ -316,39 +363,142 @@ ${cfg.routerDbPath}`
     }
   }
 
+  /** Grava a mensagem do usuário e dispara o turno em background; lança se não puder começar. */
+  function startTurn(chatId: string, text: string, list: AttachmentUpload[]): string {
+    if (running.has(chatId)) throw new RpcError('Chat ocupado', 'CHAT_BUSY')
+    const chat = d.chats.get(chatId)
+    if (!chat) throw new RpcError('Chat não encontrado', 'NOT_FOUND')
+    const project = d.projects.get(chat.projectId)
+    if (!project) throw new RpcError('Projeto não encontrado', 'NOT_FOUND')
+    if (!text.trim() && list.length === 0) throw new RpcError('Mensagem vazia', 'EMPTY_MESSAGE')
+
+    const controller = new AbortController()
+    running.set(chatId, controller)
+    let messageId: string
+    try {
+      // `@nome`/`/nome` de instruções `manual`: o conteúdo entra como bloco antes do texto.
+      const finalText = d.instructions
+        ? d.instructions.expandManual(
+            {
+              projectRoot: project.path,
+              projectId: project.id,
+              groupId: chat.groupId,
+              chatId,
+              cfg: d.getConfig()
+            },
+            text
+          ).text
+        : text
+      const { message, metas } = buildUserMessage(finalText, list)
+      const stored = d.messages.append(chatId, message, { tokenEst: estimateMessage(message) })
+      for (const m of metas) stored.attachments.push(d.messages.addAttachment(stored.id, m))
+      messageId = stored.id
+      ctx.emit({ type: 'message_added', chatId, message: stored })
+      state.setStatus(chatId, 'running')
+    } catch (e) {
+      running.delete(chatId)
+      throw e
+    }
+
+    void runTurn(d, state, chatId, controller.signal).finally(() => {
+      if (running.get(chatId) === controller) {
+        running.delete(chatId)
+        if (d.chats.get(chatId)?.status === 'running') state.setStatus(chatId, 'idle')
+      }
+    })
+    return messageId
+  }
+
+  const queue = createChatQueue({
+    repo: new QueueRepo(ctx.db),
+    blobs: ctx.blobs,
+    emit: (e) => ctx.emit(e),
+    isBusy: (chatId) => running.has(chatId),
+    start: (chatId, text, list) => {
+      startTurn(chatId, text, list)
+    }
+  })
+
+  const titleAttempted = new Set<string>()
+  const saveTitle = (chatId: string, title: string): Chat => {
+    const chat = d.chats.update(chatId, { title })
+    ctx.emit({ type: 'chat_updated', chat })
+    return chat
+  }
+  /** Título automático após o 1º turno bem-sucedido de um chat ainda "Novo chat"; falha silenciosa. */
+  const autoTitle = (chatId: string): void => {
+    const chat = d.chats.get(chatId)
+    if (!chat || chat.parentChatId || chat.title !== DEFAULT_CHAT_TITLE) return
+    if (titleAttempted.has(chatId)) return
+    titleAttempted.add(chatId)
+    generateChatTitle(d, chat, d.messages.list(chatId))
+      .then((title) => {
+        // O usuário pode ter renomeado enquanto o título era gerado.
+        if (d.chats.get(chatId)?.title === DEFAULT_CHAT_TITLE) saveTitle(chatId, title)
+      })
+      .catch(() => {})
+  }
+
+  onTurnEvent = (e) => {
+    if (e.type === 'turn_finished') {
+      queue.succeeded(e.chatId)
+      autoTitle(e.chatId)
+    } else if (e.type === 'turn_error') {
+      queue.failed(e.chatId, e.code === 'CANCELLED' ? 'turno cancelado' : e.message)
+    }
+  }
+
   return {
     runSubagent,
 
+    queue: {
+      get: (chatId) => queue.get(chatId),
+      remove: (id) => queue.remove(id),
+      edit: (id, text) => queue.edit(id, text),
+      resume: (chatId) => queue.resume(chatId)
+    },
+
+    async generateTitle(chatId) {
+      const chat = d.chats.get(chatId)
+      if (!chat) throw new RpcError('Chat não encontrado', 'NOT_FOUND')
+      let title: string
+      try {
+        title = await generateChatTitle(d, chat, d.messages.list(chatId))
+      } catch (e) {
+        throw new RpcError(e instanceof Error ? e.message : String(e), 'TITLE_FAILED')
+      }
+      titleAttempted.add(chatId)
+      return saveTitle(chatId, title)
+    },
+
     async send(chatId, text, attachments) {
-      if (running.has(chatId)) throw new RpcError('Chat ocupado', 'CHAT_BUSY')
       const chat = d.chats.get(chatId)
       if (!chat) throw new RpcError('Chat não encontrado', 'NOT_FOUND')
       if (!d.projects.get(chat.projectId)) throw new RpcError('Projeto não encontrado', 'NOT_FOUND')
       const list = attachments ?? []
       if (!text.trim() && list.length === 0) throw new RpcError('Mensagem vazia', 'EMPTY_MESSAGE')
+      // Chat ocupado (turno/compactação) ou fila com itens: entra na fila, na ordem.
+      if (queue.shouldQueue(chatId)) {
+        return { messageId: null, queuedId: queue.enqueue(chatId, text, list).id }
+      }
+      queue.clearStalePause(chatId)
+      return { messageId: startTurn(chatId, text, list), queuedId: null }
+    },
 
+    continue(chatId) {
+      if (running.has(chatId)) throw new RpcError('Chat ocupado', 'CHAT_BUSY')
+      const chat = d.chats.get(chatId)
+      if (!chat) throw new RpcError('Chat não encontrado', 'NOT_FOUND')
+      if (!d.projects.get(chat.projectId)) throw new RpcError('Projeto não encontrado', 'NOT_FOUND')
       const controller = new AbortController()
       running.set(chatId, controller)
-      let messageId: string
-      try {
-        const { message, metas } = buildUserMessage(text, list)
-        const stored = d.messages.append(chatId, message, { tokenEst: estimateMessage(message) })
-        for (const m of metas) stored.attachments.push(d.messages.addAttachment(stored.id, m))
-        messageId = stored.id
-        ctx.emit({ type: 'message_added', chatId, message: stored })
-        state.setStatus(chatId, 'running')
-      } catch (e) {
-        running.delete(chatId)
-        throw e
-      }
-
+      state.setStatus(chatId, 'running')
       void runTurn(d, state, chatId, controller.signal).finally(() => {
         if (running.get(chatId) === controller) {
           running.delete(chatId)
           if (d.chats.get(chatId)?.status === 'running') state.setStatus(chatId, 'idle')
         }
       })
-      return { messageId }
     },
 
     cancel(chatId) {
@@ -368,7 +518,7 @@ ${cfg.routerDbPath}`
       const model = chat.combo || d.getConfig().defaultCombo
       const estTokens = estimateHistory(
         model,
-        systemFor(project, d.getConfig()),
+        systemFor(project, d.getConfig(), {}, { resolver: d.instructions, chat }),
         [...d.tools, d.readToolOutput],
         d.messages.list(chatId)
       )
@@ -376,7 +526,9 @@ ${cfg.routerDbPath}`
         .list(chatId)
         .filter((r) => r.promptTokens !== null)
         .pop()
-      const win = state.windowFor(model)
+      const reported = state.lastReportedModel(chatId)
+      const fromReported = reported ? state.windowFor(model, reported) : null
+      const win = fromReported?.window != null ? fromReported : state.windowFor(model)
       return {
         estTokens,
         reportedTokens: last ? (last.promptTokens ?? 0) + (last.completionTokens ?? 0) : null,
@@ -393,17 +545,18 @@ ${cfg.routerDbPath}`
       if (!project) throw new RpcError('Projeto não encontrado', 'NOT_FOUND')
       const cfg = d.getConfig()
       const model = chat.combo || cfg.defaultCombo
-      const system = systemFor(project, cfg)
+      const system = systemFor(project, cfg, {}, { resolver: d.instructions, chat })
       const tools = [...d.tools, d.readToolOutput]
-      // Reserva o chat: `send` responde CHAT_BUSY e `cancel` aborta o resumo.
+      // Reserva o chat: `send` enfileira e `cancel` aborta o resumo.
       const controller = new AbortController()
       running.set(chatId, controller)
+      let failure: string | null = null
       try {
         const record = await compactChat(compactionDeps(d), {
           chatId,
           trigger: 'manual',
           keepRecent: cfg.keepRecentMessages,
-          models: summarizerModels(cfg, model),
+          models: summarizerModels(cfg, model, chat.settings.summarizerModel),
           estimate: (h: StoredMessage[]) => estimateHistory(model, system, tools, h),
           signal: controller.signal
         })
@@ -411,8 +564,19 @@ ${cfg.routerDbPath}`
         // O contexto em cache ficou velho.
         contexts.delete(chatId)
         return record
+      } catch (e) {
+        const nothing = e instanceof RpcError && e.code === 'NOTHING_TO_COMPACT'
+        if (!nothing) {
+          failure = controller.signal.aborted
+            ? 'compactação cancelada'
+            : `falha ao compactar: ${e instanceof Error ? e.message : String(e)}`
+        }
+        throw e
       } finally {
         if (running.get(chatId) === controller) running.delete(chatId)
+        // Mensagens enfileiradas durante a compactação: seguem ou pausam, como após um turno.
+        if (failure) queue.failed(chatId, failure)
+        else queue.succeeded(chatId)
       }
     },
 

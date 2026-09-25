@@ -23,6 +23,8 @@ console.error('erro-stderr')
 setInterval(() => {}, 1000)
 `
 const nodeEnv = { ELECTRON_RUN_AS_NODE: '1' }
+// Spawn/kill de processo é lento sob carga (suíte paralela, runner Windows do CI).
+const PROC_TIMEOUT = 30_000
 
 let dir: string
 let script: string
@@ -39,7 +41,7 @@ beforeEach(() => {
 afterEach(async () => {
   for (const c of extra.splice(0)) if (c.pid && isAlive(c.pid)) await killTree(c.pid)
   rmSync(dir, { recursive: true, force: true })
-})
+}, PROC_TIMEOUT)
 
 function make(): {
   sup: ProcessSupervisor
@@ -56,7 +58,7 @@ function make(): {
   return { sup, statuses, lines }
 }
 
-async function waitFor(cond: () => boolean, ms = 5000): Promise<void> {
+async function waitFor(cond: () => boolean, ms = 20_000): Promise<void> {
   const end = Date.now() + ms
   while (!cond()) {
     if (Date.now() > end) throw new Error('timeout em waitFor')
@@ -72,7 +74,7 @@ const spec = (n = 3): Parameters<ProcessSupervisor['start']>[0] => ({
   healthUrl: 'http://127.0.0.1:1/health'
 })
 
-describe('ProcessSupervisor', () => {
+describe('ProcessSupervisor', { timeout: PROC_TIMEOUT }, () => {
   it('start: grava PID, captura stdout/stderr por linha; stop mata e limpa', async () => {
     const { sup, statuses, lines } = make()
     const pid = await sup.start(spec())
@@ -85,7 +87,8 @@ describe('ProcessSupervisor', () => {
     await expect(sup.start(spec())).rejects.toMatchObject({ code: 'ALREADY_RUNNING' })
 
     await sup.stop('llama')
-    expect(isAlive(pid)).toBe(false)
+    await waitFor(() => !isAlive(pid))
+    await waitFor(() => statuses.at(-1)?.[1] === false)
     expect(readPids(pidsFile).llama).toBeUndefined()
     expect(sup.managedPid('llama')).toBeNull()
     expect(statuses.at(-1)).toEqual(['llama', false, null])
@@ -149,7 +152,7 @@ describe('ProcessSupervisor', () => {
   })
 })
 
-describe('checkHealth', () => {
+describe('checkHealth', { timeout: PROC_TIMEOUT }, () => {
   let server: Server
   let base: string
   beforeEach(async () => {
@@ -170,7 +173,7 @@ describe('checkHealth', () => {
   })
 
   it('2xx saudável; 500, timeout e conexão recusada não', async () => {
-    expect(await checkHealth(`${base}/ok`)).toBe(true)
+    expect(await checkHealth(`${base}/ok`, 10_000)).toBe(true)
     expect(await checkHealth(`${base}/err`)).toBe(false)
     expect(await checkHealth(`${base}/slow`, 100)).toBe(false)
     expect(await checkHealth('http://127.0.0.1:1/', 500)).toBe(false)

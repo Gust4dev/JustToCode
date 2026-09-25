@@ -1,4 +1,4 @@
-import { Boxes, FolderPlus, Settings } from 'lucide-react'
+import { Boxes, FolderPlus, ScrollText, Settings } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { ScrollArea } from '@renderer/components/ui/scroll-area'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip'
@@ -47,6 +47,21 @@ export function Sidebar(): React.JSX.Element {
         >
           <Boxes className="size-3.5" />
           Componentes
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-pressed={view === 'instructions'}
+          className={cn(
+            'h-7 w-full justify-start gap-2 px-2 text-xs font-normal text-muted-foreground',
+            view === 'instructions' && 'bg-accent text-accent-foreground'
+          )}
+          onClick={() =>
+            useUi.getState().setView(view === 'instructions' ? 'chat' : 'instructions')
+          }
+        >
+          <ScrollText className="size-3.5" />
+          Instruções
         </Button>
         <Button
           variant="ghost"

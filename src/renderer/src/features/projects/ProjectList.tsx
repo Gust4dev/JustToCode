@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, MoreHorizontal, Plus, RotateCw } from 'lucide-react'
 import { toast } from 'sonner'
-import type { Project } from '@shared/domain'
+import type { ChatGroup, Project } from '@shared/domain'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,16 +11,36 @@ import {
 import { cn } from '@renderer/lib/utils'
 import { useUi } from '@renderer/stores/ui'
 import { ChatItem } from './ChatItem'
-import { buildChatTree } from './chatTree'
 import { ConfirmDialog } from './ConfirmDialog'
-import { newChat } from './actions'
+import { GroupSection, UngroupedDropZone } from './GroupSection'
+import { newChat, newGroup } from './actions'
+import { buildSidebarTree, sortGroups } from './groupTree'
 import { errorMessage, useProjects } from './store'
 
-function ProjectChats({ projectId }: { projectId: string }): React.JSX.Element {
+const NO_GROUPS: ChatGroup[] = []
+
+function ProjectChats({
+  projectId,
+  renamingGroupId,
+  onRenamingDone
+}: {
+  projectId: string
+  renamingGroupId: string | null
+  onRenamingDone(): void
+}): React.JSX.Element {
   const chats = useProjects((s) => s.chats[projectId])
   const error = useProjects((s) => s.chatsError[projectId] ?? null)
   const children = useProjects((s) => s.children)
-  const tree = useMemo(() => buildChatTree(chats ?? [], children), [chats, children])
+  const groups = useProjects((s) => s.groups[projectId] ?? NO_GROUPS)
+  const groupsSupported = useProjects((s) => s.groupsSupported)
+  const tree = useMemo(
+    () => buildSidebarTree(groupsSupported ? groups : NO_GROUPS, chats ?? [], children),
+    [groupsSupported, groups, chats, children]
+  )
+  const sorted = useMemo(() => sortGroups(groups), [groups])
+  const ungrouped = tree.ungrouped.map((n) => (
+    <ChatItem key={n.chat.id} chat={n.chat} childChats={n.children} />
+  ))
   return (
     <div className="flex flex-col gap-px pb-1">
       <button
@@ -42,8 +62,16 @@ function ProjectChats({ projectId }: { projectId: string }): React.JSX.Element {
           <span className="truncate">Erro ao carregar chats</span>
         </button>
       )}
-      {tree.map((n) => (
-        <ChatItem key={n.chat.id} chat={n.chat} childChats={n.children} />
+      {tree.groups.length > 0 ? <UngroupedDropZone>{ungrouped}</UngroupedDropZone> : ungrouped}
+      {tree.groups.map((g) => (
+        <GroupSection
+          key={g.group.id}
+          group={g.group}
+          chats={g.chats}
+          allGroups={sorted}
+          renaming={renamingGroupId === g.group.id}
+          onRenamingDone={onRenamingDone}
+        />
       ))}
     </div>
   )
@@ -52,6 +80,13 @@ function ProjectChats({ projectId }: { projectId: string }): React.JSX.Element {
 function ProjectItem({ project }: { project: Project }): React.JSX.Element {
   const selected = useUi((s) => s.projectId === project.id)
   const [confirming, setConfirming] = useState(false)
+  const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null)
+  const groupsSupported = useProjects((s) => s.groupsSupported)
+
+  const addGroup = (): void => {
+    if (!selected) useUi.getState().selectProject(project.id)
+    void newGroup(project.id, 'Novo grupo').then((id) => id && setRenamingGroupId(id))
+  }
 
   const remove = (): void => {
     useProjects
@@ -96,13 +131,20 @@ function ProjectItem({ project }: { project: Project }): React.JSX.Element {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-48">
             <DropdownMenuItem onSelect={() => void newChat(project.id)}>Novo chat</DropdownMenuItem>
+            {groupsSupported && <DropdownMenuItem onSelect={addGroup}>Novo grupo</DropdownMenuItem>}
             <DropdownMenuItem variant="destructive" onSelect={() => setConfirming(true)}>
               Remover da lista
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      {selected && <ProjectChats projectId={project.id} />}
+      {selected && (
+        <ProjectChats
+          projectId={project.id}
+          renamingGroupId={renamingGroupId}
+          onRenamingDone={() => setRenamingGroupId(null)}
+        />
+      )}
       <ConfirmDialog
         open={confirming}
         onOpenChange={setConfirming}

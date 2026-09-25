@@ -6,7 +6,28 @@ import { defaultRouterDbPath, readRouterCombos } from './routerDb'
 export interface ComboResolver {
   info(combo: string): Promise<ComboInfo>
   effectiveWindow(model: string): Promise<{ window: number | null; limitingModel: string | null }>
+  /**
+   * Janela do primeiro membro não ignorado com janela conhecida (override manual da combo vence).
+   * Combo sem membros/janelas conhecidos → `unknownWindowFallback` (model null).
+   */
+  primaryWindow(combo: string): Promise<{ window: number; model: string | null }>
+  /**
+   * Janela do modelo que o router reportou: casa com um membro (igualdade ou sufixo após `/`),
+   * senão procura em `/v1/models`; null se desconhecida.
+   */
+  windowForReported(combo: string, reported: string): Promise<number | null>
   invalidate(): void
+}
+
+/** Parte depois do primeiro `/` (`cx/gpt-oss` → `gpt-oss`); o próprio id se não houver `/`. */
+const afterSlash = (id: string): string => {
+  const i = id.indexOf('/')
+  return i >= 0 ? id.slice(i + 1) : id
+}
+
+/** `reported` corresponde ao membro `member` (igualdade ou sufixo após `/`, nos dois sentidos). */
+export function matchesMember(member: string, reported: string): boolean {
+  return member === reported || afterSlash(member) === reported || member === afterSlash(reported)
 }
 
 const MODELS_TTL_MS = 5 * 60_000
@@ -105,6 +126,26 @@ export function createComboResolver(d: {
     async effectiveWindow(model) {
       const i = await info(model)
       return { window: i.effectiveWindow, limitingModel: i.limitingModel }
+    },
+    async primaryWindow(combo) {
+      const i = await info(combo)
+      const override = d.overrides.get(combo)
+      if (override?.windowOverride != null) return { window: override.windowOverride, model: null }
+      for (const m of i.members) {
+        if (i.ignored.includes(m)) continue
+        const w = i.windows[m]
+        if (w != null) return { window: w, model: m }
+      }
+      return { window: d.getConfig().unknownWindowFallback, model: null }
+    },
+    async windowForReported(combo, reported) {
+      const i = await info(combo)
+      const member =
+        i.members.find((m) => m === reported) ?? i.members.find((m) => matchesMember(m, reported))
+      if (member && i.windows[member] != null) return i.windows[member]
+      const manual = d.windows.get(reported)
+      if (manual != null) return manual
+      return (await models()).find((m) => m.id === reported)?.contextWindow ?? null
     },
     invalidate() {
       cache = null

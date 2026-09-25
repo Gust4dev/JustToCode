@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import type { EcosystemScope, SlashCommand } from '@shared/domain'
-import { fmString, parseFrontmatter } from './frontmatter'
+import { formatOf, parseInstructionText } from './frontmatter'
 import { MtimeCache, expandHome, listFiles, pathKey } from './paths'
 import { discoverSkills } from './skills'
 import { listPlugins } from './plugins'
@@ -32,7 +32,14 @@ function readText(p: string): string | null {
 
 const cache = new MtimeCache<SlashCommand[]>()
 
-function fileCommands(
+/** Extensões aceitas para arquivos de comando. */
+export const COMMAND_EXTS = ['.md', '.toml']
+
+/**
+ * Só os arquivos de comando `.md`/`.toml` (plugins, globais, projeto), sem as skills; lista
+ * estável por cache. Nome: `command` do frontmatter/TOML ou o nome do arquivo.
+ */
+export function listFileCommands(
   projectRoot: string,
   commandRoots: string[],
   pluginRoots: string[]
@@ -60,15 +67,16 @@ function fileCommands(
     const out: SlashCommand[] = []
     for (const root of roots) {
       deps.push(root.dir)
-      for (const file of listFiles(root.dir, '.md')) {
+      const files = COMMAND_EXTS.flatMap((ext) => listFiles(root.dir, ext)).sort()
+      for (const file of files) {
         const path = join(root.dir, file)
         deps.push(path)
         const raw = readText(path)
         if (raw === null) continue
-        const { data, body } = parseFrontmatter(raw)
+        const { body, meta } = parseInstructionText(raw, formatOf(path))
         out.push({
-          name: root.prefix + file.slice(0, -3),
-          description: fmString(data, 'description') || firstLine(body),
+          name: root.prefix + (meta.command ?? file.slice(0, file.lastIndexOf('.'))),
+          description: meta.description ?? firstLine(body),
           source: 'command',
           path,
           scope: root.scope
@@ -94,7 +102,7 @@ export function listCommands(projectRoot: string, roots: EcosystemRoots): SlashC
       scope: s.scope
     })
   }
-  for (const c of fileCommands(projectRoot, roots.commandRoots, roots.pluginRoots ?? []))
+  for (const c of listFileCommands(projectRoot, roots.commandRoots, roots.pluginRoots ?? []))
     byName.set(c.name, c)
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name))
 }
@@ -120,5 +128,9 @@ export function expandCommand(
   if (cmd.source === 'skill') return `Use the skill "${cmd.name}". ${args.trim()}`.trim()
   const raw = readText(cmd.path)
   if (raw === null) return null
-  return applyArguments(parseFrontmatter(raw).body.trim(), args)
+  const format = formatOf(cmd.path)
+  let body = parseInstructionText(raw, format).body.trim()
+  // Gemini CLI: `{{args}}` é o marcador de argumentos.
+  if (format === 'toml') body = body.split('{{args}}').join('$ARGUMENTS')
+  return applyArguments(body, args)
 }

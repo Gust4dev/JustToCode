@@ -1,17 +1,26 @@
 import type {
   AgentDefinition,
+  ActiveInstructions,
   Approval,
   ChangedFileSummary,
   Chat,
+  ChatGroup,
+  ChatSettings,
   ComboInfo,
   CompactionRecord,
   ContextState,
+  InstallPreview,
+  Instruction,
   InstructionFile,
+  InstructionKind,
+  InstructionScope,
   ModelInfo,
   PermissionMode,
   Project,
+  QueueState,
   RequestRecord,
   RevertConflict,
+  SettingSuggestion,
   SkillInfo,
   SlashCommand,
   StoredMessage,
@@ -32,7 +41,16 @@ export interface HostApi {
   'chats.list': { params: { projectId: string }; result: Chat[] }
   'chats.create': { params: { projectId: string; title?: string; combo?: string }; result: Chat }
   'chats.update': {
-    params: { id: string; title?: string; combo?: string; permissionMode?: PermissionMode }
+    params: {
+      id: string
+      title?: string
+      combo?: string
+      permissionMode?: PermissionMode
+      groupId?: string | null
+      maxIterations?: number | null
+      tokenBudget?: number | null
+      settings?: Partial<ChatSettings>
+    }
     result: Chat
   }
   'chats.delete': { params: { id: string }; result: null }
@@ -42,7 +60,7 @@ export interface HostApi {
   'toolCalls.output': { params: { id: string }; result: { text: string } }
   'engine.send': {
     params: { chatId: string; text: string; attachments: AttachmentUpload[] }
-    result: { messageId: string }
+    result: { messageId: string | null; queuedId: string | null }
   }
   'engine.cancel': { params: { chatId: string }; result: null }
   'approvals.list': { params: { chatId?: string }; result: Approval[] }
@@ -102,6 +120,56 @@ export interface HostApi {
   'git.commitMessage': {
     params: { projectId: string }
     result: { message: string; staged: boolean; model: string }
+  }
+  'queue.get': { params: { chatId: string }; result: QueueState }
+  'queue.remove': { params: { id: string }; result: QueueState }
+  'queue.edit': { params: { id: string; text: string }; result: QueueState }
+  'queue.resume': { params: { chatId: string }; result: QueueState }
+  /** Retoma após `turn_paused`. */
+  'engine.continue': { params: { chatId: string }; result: null }
+  'chats.generateTitle': { params: { chatId: string }; result: Chat }
+  'chats.continue': { params: { chatId: string }; result: Chat }
+  'groups.list': { params: { projectId: string }; result: ChatGroup[] }
+  'groups.create': { params: { projectId: string; name: string }; result: ChatGroup }
+  'groups.update': {
+    params: { id: string; name?: string; collapsed?: boolean; sortOrder?: number }
+    result: ChatGroup
+  }
+  /** Os chats do grupo ficam sem grupo. */
+  'groups.delete': { params: { id: string }; result: null }
+  'instructions.list': {
+    params: { projectId?: string; groupId?: string; chatId?: string; kind?: InstructionKind }
+    result: Instruction[]
+  }
+  'instructions.save': {
+    params: Partial<Instruction> & Pick<Instruction, 'kind' | 'scope' | 'name' | 'trigger' | 'body'>
+    result: Instruction
+  }
+  'instructions.delete': { params: { id: string }; result: null }
+  'instructions.setEnabled': { params: { id: string; enabled: boolean }; result: Instruction }
+  'instructions.active': { params: { chatId: string }; result: ActiveInstructions }
+  'instructions.export': { params: { id: string; projectId: string }; result: { path: string } }
+  'rules.parse': {
+    params: { chatId: string; text: string }
+    result: { ruleText: string; suggestions: SettingSuggestion[] }
+  }
+  'memory.undo': { params: { id: string }; result: null }
+  'memory.deleteByOrigin': { params: { thirdPartyId: string }; result: { deleted: number } }
+  'library.previewGithub': { params: { url: string }; result: InstallPreview }
+  'library.installGithub': {
+    params: {
+      url: string
+      ref: string
+      sha: string
+      paths: string[]
+      scope: InstructionScope
+      scopeId: string | null
+    }
+    result: Instruction[]
+  }
+  'library.checkUpdate': {
+    params: { id: string }
+    result: { hasUpdate: boolean; preview: InstallPreview | null }
   }
 }
 

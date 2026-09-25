@@ -1,10 +1,14 @@
 import type {
   Approval,
   ChangeOrigin,
+  Chat,
   ChatStatus,
   CompactionRecord,
   CompactionTrigger,
   ContextState,
+  Instruction,
+  QueueState,
+  ReasoningLevel,
   StoredMessage,
   ToolCallRecord
 } from './domain'
@@ -30,7 +34,13 @@ export type EngineEvent =
       origin: ChangeOrigin
     }
   | { type: 'context_updated'; chatId: string; context: ContextState }
-  | { type: 'provider_switched'; chatId: string; from: string | null; to: string }
+  | {
+      type: 'provider_switched'
+      chatId: string
+      from: string | null
+      to: string
+      window?: number | null
+    }
   | { type: 'turn_finished'; chatId: string; requestId: string }
   | { type: 'turn_error'; chatId: string; message: string; code?: string }
   | { type: 'compaction_started'; chatId: string; trigger: CompactionTrigger }
@@ -49,3 +59,28 @@ export type EngineEvent =
       toolCallId: string
     }
   | { type: 'subagent_finished'; chatId: string; childChatId: string; toolCallId: string }
+  | { type: 'queue_changed'; queue: QueueState }
+  | { type: 'chat_updated'; chat: Chat }
+  | {
+      type: 'budget_updated'
+      chatId: string
+      used: number
+      budget: number | null
+      iterations: number
+      maxIterations: number | null
+    }
+  | { type: 'turn_paused'; chatId: string; reason: 'budget' | 'iterations' }
+  | {
+      type: 'memory_saved'
+      chatId: string
+      instruction: Instruction
+      toolCallId: string
+      created: boolean
+    }
+  | {
+      type: 'reasoning_status'
+      chatId: string
+      requestId: string
+      requested: ReasoningLevel | null
+      confirmed: boolean
+    }

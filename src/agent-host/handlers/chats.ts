@@ -7,6 +7,7 @@ import { ChatRepo } from '../repo/chats'
 import { MessageRepo } from '../repo/messages'
 import { ToolCallRepo } from '../repo/toolCalls'
 import { RequestRepo } from '../repo/requests'
+import { ChatGroupRepo } from '../repo/chatGroups'
 
 export const chatHandlers: HandlerModule = (ctx) => {
   const projects = new ProjectRepo(ctx.db)
@@ -14,6 +15,7 @@ export const chatHandlers: HandlerModule = (ctx) => {
   const messages = new MessageRepo(ctx.db)
   const toolCalls = new ToolCallRepo(ctx.db)
   const requests = new RequestRepo(ctx.db)
+  const groups = new ChatGroupRepo(ctx.db)
 
   const requireChat = (id: string): void => {
     if (!chats.get(id)) throw new RpcError('Chat não encontrado', 'NOT_FOUND')
@@ -34,12 +36,19 @@ export const chatHandlers: HandlerModule = (ctx) => {
         projectId: p.projectId,
         title: p.title?.trim() || 'Novo chat',
         combo: p.combo ?? getConfig().defaultCombo,
-        color: chats.nextColor(p.projectId)
+        color: chats.nextColor(p.projectId),
+        maxIterations: getConfig().defaultMaxIterations
       })
     },
 
     'chats.update': ({ id, ...patch }: HostParams<'chats.update'>): HostResult<'chats.update'> => {
       requireChat(id)
+      if (patch.groupId) {
+        const g = groups.get(patch.groupId)
+        if (!g || g.projectId !== chats.get(id)?.projectId) {
+          throw new RpcError('Grupo não encontrado', 'NOT_FOUND')
+        }
+      }
       return chats.update(id, patch)
     },
 

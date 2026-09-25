@@ -5,11 +5,17 @@ import { projectHandlers, projectWatchHandlers } from './projects'
 import { chatHandlers } from './chats'
 import { changesHandlers } from './changes'
 import { engineHandlers } from './engine'
+import { queueHandlers } from './queue'
 import { approvalHandlers } from './approvals'
 import { comboHandlers } from './combos'
 import { compactionHandlers } from './compaction'
 import { ecosystemHandlers } from './ecosystem'
 import { gitHandlers } from './git'
+import { continuationHandlers, groupHandlers } from './groups'
+import { instructionHandlers } from './instructions'
+import { libraryHandlers } from './library'
+import { ruleHandlers } from './rules'
+import { memoryHandlers } from './memory'
 import type { Services } from '../services'
 
 export const hostHandlers: HandlerModule = (ctx) => ({
@@ -31,7 +37,9 @@ export const modules: HandlerModule[] = [
   projectHandlers,
   chatHandlers,
   changesHandlers,
-  ecosystemHandlers()
+  ecosystemHandlers(),
+  groupHandlers,
+  libraryHandlers()
 ]
 
 /** Módulos que dependem do container de serviços (engine, gate compartilhado). */
@@ -41,6 +49,7 @@ export const serviceModules = (s: Services): HandlerModule[] => [
     stopWatching: (id) => s.watcher.stop(id)
   }),
   engineHandlers(s.engine),
+  queueHandlers(s.engine),
   approvalHandlers(s.gate),
   comboHandlers({
     resolver: s.comboResolver,
@@ -48,5 +57,15 @@ export const serviceModules = (s: Services): HandlerModule[] => [
     windows: s.modelWindows
   }),
   compactionHandlers({ engine: s.engine, compactions: s.compactions, messages: s.messages }),
-  gitHandlers({ projects: s.projects, model: s.model, getConfig: s.getConfig })
+  gitHandlers({ projects: s.projects, model: s.model, getConfig: s.getConfig }),
+  continuationHandlers(s.continuation),
+  instructionHandlers({
+    resolver: s.instructions,
+    repo: s.instructionRepo,
+    projects: s.projects,
+    chats: s.chats,
+    getConfig: s.getConfig
+  }),
+  memoryHandlers(s.memory),
+  ruleHandlers({ model: s.model, chats: s.chats, getConfig: s.getConfig })
 ]

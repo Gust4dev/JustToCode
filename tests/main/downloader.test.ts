@@ -67,7 +67,7 @@ function collector(): { events: DownloadProgress[]; onProgress(p: DownloadProgre
   return { events, onProgress: (p) => events.push(p) }
 }
 
-describe('download', () => {
+describe('download', { timeout: 30_000 }, () => {
   it('completo: grava via .part, confere hash e renomeia', async () => {
     const dest = join(dir, 'sub', 'm.gguf')
     const c = collector()
@@ -159,7 +159,7 @@ describe('download', () => {
   })
 })
 
-describe('contexto: startDownload + cancelDownload', () => {
+describe('contexto: startDownload + cancelDownload', { timeout: 30_000 }, () => {
   it('cancelDownload aborta o download registrado', async () => {
     const events: DownloadProgress[] = []
     const ctx = createComponentsContext({

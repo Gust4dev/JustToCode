@@ -8,7 +8,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { errorMessage } from '@renderer/features/projects/store'
 import { cn } from '@renderer/lib/utils'
-import { formatTokens, meterColor, type MeterColor } from './format'
+import { formatTokens, meterColor, withSwitchedWindow, type MeterColor } from './format'
 
 const BAR_CLASS: Record<MeterColor, string> = {
   green: 'bg-emerald-500',
@@ -64,6 +64,12 @@ export function ContextMeter({ chatId }: { chatId: string }): React.JSX.Element 
 
   useEngineEvent((e) => {
     if (e.type === 'context_updated' && e.chatId === chatId) setLoaded({ chatId, ctx: e.context })
+    // Troca de modelo com janela conhecida: o medidor já usa a janela nova até o próximo contexto.
+    if (e.type === 'provider_switched' && e.chatId === chatId && typeof e.window === 'number')
+      setLoaded((cur) => ({
+        chatId,
+        ctx: withSwitchedWindow(cur?.chatId === chatId ? cur.ctx : null, e.window ?? null, e.to)
+      }))
   })
 
   const compactNow = (): void => {

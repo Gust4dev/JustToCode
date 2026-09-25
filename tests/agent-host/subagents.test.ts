@@ -86,7 +86,8 @@ async function setup(
     skillRoots: [],
     commandRoots: [],
     agentRoots: [],
-    pluginRoots: []
+    pluginRoots: [],
+    ruleRoots: []
   }
   const db = openDb(join(base, 'db.sqlite'))
   const blobs = new BlobStore(join(base, 'blobs'))

@@ -1,7 +1,16 @@
 import { create } from 'zustand'
-import type { Chat, ChatStatus, PermissionMode, Project } from '@shared/domain'
+import type {
+  Chat,
+  ChatGroup,
+  ChatSettings,
+  ChatStatus,
+  PermissionMode,
+  Project
+} from '@shared/domain'
 import { call } from '@renderer/lib/host'
 import { findChatIn, removeFromChildren, upsertChild } from './chatTree'
+import { setChatGroup, ungroupChats } from './groupTree'
+import { applyChatUpdate } from './chatUpdate'
 
 export interface ProjectsState {
   projects: Project[]
@@ -18,13 +27,44 @@ export interface ProjectsState {
   loadChats(projectId: string): Promise<void>
   createChat(projectId: string): Promise<Chat>
   renameChat(id: string, title: string): Promise<void>
-  /** `chats.update` de combo/modo de permissão; atualiza o chat no store. */
-  updateChat(id: string, patch: { combo?: string; permissionMode?: PermissionMode }): Promise<void>
+  /** `chats.update` de combo/modo/limites; atualiza o chat no store. */
+  updateChat(
+    id: string,
+    patch: {
+      combo?: string
+      permissionMode?: PermissionMode
+      maxIterations?: number | null
+      tokenBudget?: number | null
+      settings?: Partial<ChatSettings>
+    }
+  ): Promise<void>
+  /** Aplica um chat vindo do host (`chat_updated`); devolve false se ele não está carregado. */
+  chatUpdated(chat: Chat): boolean
+  /** `chats.generateTitle`; atualiza o chat no store. */
+  generateTitle(id: string): Promise<void>
   deleteChat(id: string): Promise<void>
   /** Recarrega os filhos de um chat (`chats.children`); host sem o método → sem filhos. */
   loadChildren(parentId: string): Promise<void>
   /** Atualiza o status de um chat conhecido; devolve false se o chat não está carregado. */
   setChatStatus(chatId: string, status: ChatStatus): boolean
+  /** Grupos de chats por projeto. */
+  groups: Record<string, ChatGroup[]>
+  /** false quando o host não tem `groups.*` (UNKNOWN_METHOD): a sidebar esconde os grupos. */
+  groupsSupported: boolean
+  loadGroups(projectId: string): Promise<void>
+  createGroup(projectId: string, name: string): Promise<ChatGroup>
+  updateGroup(id: string, patch: { name?: string; collapsed?: boolean }): Promise<void>
+  /** Aplica uma reordenação já calculada (otimista) e grava os `sortOrder` alterados. */
+  reorderGroups(
+    projectId: string,
+    groups: ChatGroup[],
+    changed: { id: string; sortOrder: number }[]
+  ): Promise<void>
+  deleteGroup(id: string): Promise<void>
+  /** Move um chat de topo para um grupo (null = sem grupo). */
+  moveChatToGroup(chatId: string, groupId: string | null): Promise<void>
+  /** `chats.continue`: recarrega chats/grupos do projeto (o host pode criar grupo e mover o original). */
+  continueChat(chatId: string): Promise<Chat>
 }
 
 export const errorMessage = (e: unknown): string =>
@@ -37,8 +77,24 @@ function replaceChat(chats: Record<string, Chat[]>, chat: Chat): Record<string, 
   return { ...chats, [chat.projectId]: next }
 }
 
-const isUnknownMethod = (e: unknown): boolean =>
+export const isUnknownMethod = (e: unknown): boolean =>
   (e as { code?: unknown } | null)?.code === 'UNKNOWN_METHOD'
+
+function replaceGroup(
+  groups: Record<string, ChatGroup[]>,
+  group: ChatGroup
+): Record<string, ChatGroup[]> {
+  const list = groups[group.projectId] ?? []
+  const next = list.some((g) => g.id === group.id)
+    ? list.map((g) => (g.id === group.id ? group : g))
+    : [...list, group]
+  return { ...groups, [group.projectId]: next }
+}
+
+function projectOfGroup(groups: Record<string, ChatGroup[]>, id: string): string | null {
+  for (const [pid, list] of Object.entries(groups)) if (list.some((g) => g.id === id)) return pid
+  return null
+}
 
 /** Filhos de cada chat; o primeiro UNKNOWN_METHOD (host sem subagentes) encerra com mapa vazio. */
 async function fetchChildren(parents: Chat[]): Promise<Record<string, Chat[]> | null> {
@@ -62,6 +118,8 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   chats: {},
   chatsError: {},
   children: {},
+  groups: {},
+  groupsSupported: true,
 
   loadProjects: async () => {
     try {
@@ -87,6 +145,7 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   },
 
   loadChats: async (projectId) => {
+    void get().loadGroups(projectId)
     try {
       const list = await call('chats.list', { projectId })
       // Filhos junto com a lista: a seleção de um chat filho não some enquanto eles carregam.
@@ -119,7 +178,19 @@ export const useProjects = create<ProjectsState>((set, get) => ({
 
   updateChat: async (id, patch) => {
     const chat = await call('chats.update', { id, ...patch })
-    set({ chats: replaceChat(get().chats, chat) })
+    if (!get().chatUpdated(chat)) set({ chats: replaceChat(get().chats, chat) })
+  },
+
+  chatUpdated: (chat) => {
+    const next = applyChatUpdate(get().chats, get().children, chat)
+    if (!next) return false
+    set(next)
+    return true
+  },
+
+  generateTitle: async (id) => {
+    const chat = await call('chats.generateTitle', { chatId: id })
+    get().chatUpdated(chat)
   },
 
   deleteChat: async (id) => {
@@ -157,6 +228,88 @@ export const useProjects = create<ProjectsState>((set, get) => ({
       }
     }
     return false
+  },
+
+  loadGroups: async (projectId) => {
+    if (!get().groupsSupported) return
+    try {
+      const list = await call('groups.list', { projectId })
+      set({ groups: { ...get().groups, [projectId]: list } })
+    } catch (e) {
+      // host sem grupos: esconde a UI; erro transitório mantém o que havia
+      if (isUnknownMethod(e)) set({ groupsSupported: false })
+    }
+  },
+
+  createGroup: async (projectId, name) => {
+    const group = await call('groups.create', { projectId, name })
+    set({ groups: replaceGroup(get().groups, group) })
+    return group
+  },
+
+  updateGroup: async (id, patch) => {
+    const pid = projectOfGroup(get().groups, id)
+    const before = pid ? get().groups[pid] : null
+    // Otimista (recolher precisa responder na hora); volta atrás se o host recusar.
+    if (pid && before)
+      set({
+        groups: {
+          ...get().groups,
+          [pid]: before.map((g) => (g.id === id ? { ...g, ...patch } : g))
+        }
+      })
+    try {
+      const group = await call('groups.update', { id, ...patch })
+      set({ groups: replaceGroup(get().groups, group) })
+    } catch (e) {
+      if (pid && before) set({ groups: { ...get().groups, [pid]: before } })
+      throw e
+    }
+  },
+
+  reorderGroups: async (projectId, groups, changed) => {
+    const before = get().groups[projectId] ?? []
+    set({ groups: { ...get().groups, [projectId]: groups } })
+    try {
+      await Promise.all(changed.map((c) => call('groups.update', c)))
+    } catch (e) {
+      set({ groups: { ...get().groups, [projectId]: before } })
+      void get().loadGroups(projectId)
+      throw e
+    }
+  },
+
+  deleteGroup: async (id) => {
+    await call('groups.delete', { id })
+    const pid = projectOfGroup(get().groups, id)
+    if (!pid) return
+    set({
+      groups: { ...get().groups, [pid]: get().groups[pid].filter((g) => g.id !== id) },
+      chats: { ...get().chats, [pid]: ungroupChats(get().chats[pid] ?? [], id) }
+    })
+  },
+
+  moveChatToGroup: async (chatId, groupId) => {
+    const chat = findChat(get().chats, chatId)
+    if (!chat || chat.groupId === groupId) return
+    const pid = chat.projectId
+    set({ chats: { ...get().chats, [pid]: setChatGroup(get().chats[pid] ?? [], chatId, groupId) } })
+    try {
+      const updated = await call('chats.update', { id: chatId, groupId })
+      set({ chats: replaceChat(get().chats, updated) })
+    } catch (e) {
+      set({
+        chats: { ...get().chats, [pid]: setChatGroup(get().chats[pid] ?? [], chatId, chat.groupId) }
+      })
+      throw e
+    }
+  },
+
+  continueChat: async (chatId) => {
+    const chat = await call('chats.continue', { chatId })
+    set({ chats: replaceChat(get().chats, chat) })
+    await get().loadChats(chat.projectId)
+    return chat
   }
 }))
 

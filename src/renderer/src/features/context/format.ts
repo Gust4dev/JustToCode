@@ -1,3 +1,5 @@
+import type { ContextState } from '@shared/domain'
+
 export type MeterColor = 'green' | 'amber' | 'red'
 
 /** `999` → `999`, `61234` → `61k`, `1_000_000` → `1M`. */
@@ -18,4 +20,22 @@ export function meterColor(pct: number): MeterColor {
   if (pct < 0.5) return 'green'
   if (pct < 0.7) return 'amber'
   return 'red'
+}
+
+/**
+ * Contexto após um `provider_switched` com janela: troca a janela e o modelo limitante e mantém os
+ * tokens. Sem contexto carregado ainda, começa um com estimativa zerada.
+ */
+export function withSwitchedWindow(
+  ctx: ContextState | null,
+  window: number | null,
+  model: string
+): ContextState | null {
+  if (window === null) return ctx
+  return {
+    estTokens: ctx?.estTokens ?? 0,
+    reportedTokens: ctx?.reportedTokens ?? null,
+    effectiveWindow: window,
+    limitingModel: model
+  }
 }

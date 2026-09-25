@@ -11,6 +11,10 @@ export function engineHandlers(engine: AgentEngine): HandlerModule {
       engine.cancel(p.chatId)
       return null
     },
+    'engine.continue': (p: HostParams<'engine.continue'>): HostResult<'engine.continue'> => {
+      engine.continue(p.chatId)
+      return null
+    },
     'context.get': (p: HostParams<'context.get'>): HostResult<'context.get'> =>
       engine.context(p.chatId)
   })

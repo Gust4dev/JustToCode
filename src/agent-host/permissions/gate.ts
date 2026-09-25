@@ -4,12 +4,14 @@ import type { HostContext } from '../context'
 import type { PermissionGate, PermissionInput } from '../services/types'
 import { ApprovalRepo } from '../repo/approvals'
 import { PermissionRuleRepo } from '../repo/permissionRules'
-import { needsAlwaysConfirm } from './alwaysConfirm'
+import { isSensitivePath, needsAlwaysConfirm } from './alwaysConfirm'
 import { matchesRule, rulePatternFor } from './rules'
 import { TASK_TOOL } from '../tools/task'
 
 /** Resumo das aprovações de `task` (fallback quando o waiter já não existe). */
 const TASK_SUMMARY_PREFIX = 'subagent '
+/** Resumo das aprovações de `read_file` (fallback quando o waiter já não existe). */
+const READ_SUMMARY_PREFIX = 'read '
 
 /** Subconjunto estrutural de ChatRepo (Task 1.1) usado pelo gate. */
 export interface GateChatRepo {
@@ -32,6 +34,7 @@ interface Waiter {
   /** Comando completo (o summary pode vir truncado). */
   command: string
   toolName: string
+  toolKind: PermissionInput['tool']['kind']
   settle(decision: 'allow' | 'deny'): void
 }
 
@@ -76,7 +79,11 @@ export function createPermissionGate(
 
   const decide: PermissionGate['decide'] = (input) => {
     const { chat, projectId, tool, args } = input
-    if (tool.kind === 'read') return 'allow'
+    if (tool.kind === 'read') {
+      // Leitura de credenciais/segredos sempre pergunta, mesmo em allow-all.
+      const path = targetOf(input)
+      return path && isSensitivePath(path) ? 'ask' : 'allow'
+    }
     // Colisão sempre pergunta: nem allow-all nem regra "Sempre" liberam.
     if (collidingChats(input).length > 0) return 'ask'
     // Subagentes: allow-all ou a regra própria `task` do projeto (nunca regra de shell).
@@ -112,6 +119,7 @@ export function createPermissionGate(
         chatId: chat.id,
         command: commandOf(args),
         toolName: tool.name,
+        toolKind: tool.kind,
         settle
       })
     })
@@ -133,7 +141,11 @@ export function createPermissionGate(
       throw new RpcError('Aprovação já decidida', 'ALREADY_DECIDED')
     }
     const waiter = waiters.get(approvalId)
-    if (remember && decision === 'allow') {
+    // Leitura sensível nunca vira regra lembrada: cada acesso pergunta de novo.
+    const isRead = waiter
+      ? waiter.toolKind === 'read'
+      : approval.summary.startsWith(READ_SUMMARY_PREFIX)
+    if (remember && decision === 'allow' && !isRead) {
       const isTask = waiter
         ? waiter.toolName === TASK_TOOL
         : approval.summary.startsWith(TASK_SUMMARY_PREFIX)

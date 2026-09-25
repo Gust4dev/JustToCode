@@ -62,6 +62,7 @@ async function setup(
     commandRoots: [],
     agentRoots: [],
     pluginRoots: [],
+    ruleRoots: [],
     ...o.cfg
   }
   const db = openDb(join(base, 'db.sqlite'))
@@ -307,7 +308,7 @@ describe('engine + compactação', () => {
     expect(tool.content).not.toContain('Tool output summarized')
   })
 
-  it('effective_window gravado = mínimo da combo (membros lidos do banco do 9router)', async () => {
+  it('effective_window gravado = janela do primeiro membro da combo (membros lidos do banco do 9router)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'jtc-router-'))
     const routerDb = join(dir, 'data.sqlite')
     const rdb = new Database(routerDb)
@@ -328,12 +329,14 @@ describe('engine + compactação', () => {
     })
     await env.services.engine.send(env.chat.id, 'oi', [])
     await waitEnds(env.events, 1)
-    expect(env.services.requests.list(env.chat.id)[0].effectiveWindow).toBe(32000)
+    // Antes do 1º modelo reportado: janela do primário (não o mínimo da combo).
+    expect(env.services.requests.list(env.chat.id)[0].effectiveWindow).toBe(200000)
     const ctxEv = env.events.filter((e) => e.type === 'context_updated')
-    expect(ctxEv.every((e) => e.context.limitingModel === 'm/small')).toBe(true)
+    expect(ctxEv.every((e) => e.context.limitingModel === 'm/big')).toBe(true)
+    // 'fake/model' (reportado) não tem janela conhecida → continua no primário.
     expect(env.services.engine.context(env.chat.id)).toMatchObject({
-      effectiveWindow: 32000,
-      limitingModel: 'm/small'
+      effectiveWindow: 200000,
+      limitingModel: 'm/big'
     })
   })
 
@@ -342,7 +345,9 @@ describe('engine + compactação', () => {
       opts: {
         comboResolver: {
           info: () => Promise.reject(new Error('não usado')),
-          effectiveWindow: async () => ({ window: 50000, limitingModel: 'x/limit' }),
+          effectiveWindow: () => Promise.reject(new Error('não usado')),
+          primaryWindow: async () => ({ window: 50000, model: 'x/limit' }),
+          windowForReported: async () => null,
           invalidate: () => {}
         }
       }

@@ -66,3 +66,57 @@ export async function resolveSlashText(
     throw e
   }
 }
+
+/** Comando embutido do app (não vem do ecossistema): salva uma regra do chat. */
+export const RULE_COMMAND: SlashCommand = {
+  name: 'regra',
+  description: 'Cria uma regra para este chat (e sugere ajustes)',
+  source: 'command',
+  path: '',
+  scope: 'global'
+}
+
+/** Comandos do menu: os embutidos primeiro, sem duplicar nomes vindos do ecossistema. */
+export function withBuiltins(commands: SlashCommand[]): SlashCommand[] {
+  return [RULE_COMMAND, ...commands.filter((c) => c.name !== RULE_COMMAND.name)]
+}
+
+// `@nome`: instruções de gatilho manual.
+
+/** `…texto @fil` (menção sendo digitada no fim) → `fil`; senão null. */
+export function mentionQuery(text: string): string | null {
+  const m = /(?:^|\s)@([^\s@]*)$/.exec(text)
+  return m ? m[1] : null
+}
+
+/** Troca a menção sendo digitada no fim por `@nome `. */
+export function applyMention(text: string, name: string): string {
+  return text.replace(/(^|\s)@[^\s@]*$/, `$1@${name} `)
+}
+
+export interface MentionItem {
+  name: string
+  description: string
+  scope: string
+}
+
+/** Filtra menções pelo mesmo critério dos comandos (nome começa, contém, descrição). */
+export function filterMentions(items: MentionItem[], query: string, limit = 50): MentionItem[] {
+  const q = query.toLowerCase()
+  const scored: { m: MentionItem; score: number }[] = []
+  for (const m of items) {
+    const name = m.name.toLowerCase()
+    const score = name.startsWith(q)
+      ? 0
+      : name.includes(q)
+        ? 1
+        : m.description.toLowerCase().includes(q)
+          ? 2
+          : -1
+    if (score >= 0) scored.push({ m, score })
+  }
+  return scored
+    .sort((a, b) => a.score - b.score || a.m.name.localeCompare(b.m.name))
+    .slice(0, limit)
+    .map((s) => s.m)
+}

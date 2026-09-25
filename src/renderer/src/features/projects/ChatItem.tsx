@@ -1,11 +1,25 @@
 import { useRef, useState } from 'react'
-import { Bot, ChevronRight, Clock, Loader2, Trash2 } from 'lucide-react'
+import { Bot, ChevronRight, Clock, Loader2, MoreHorizontal } from 'lucide-react'
 import { toast } from 'sonner'
-import type { Chat } from '@shared/domain'
+import type { Chat, ChatGroup } from '@shared/domain'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger
+} from '@renderer/components/ui/dropdown-menu'
 import { cn } from '@renderer/lib/utils'
 import { useUi } from '@renderer/stores/ui'
 import { ConfirmDialog } from './ConfirmDialog'
+import { continueInNewChat, moveChatToGroup, newGroup } from './actions'
+import { DND_CHAT, sortGroups } from './groupTree'
 import { errorMessage, useProjects } from './store'
+
+const NO_GROUPS: ChatGroup[] = []
 
 function StatusMark({ chat }: { chat: Chat }): React.JSX.Element {
   if (chat.status === 'running')
@@ -107,9 +121,12 @@ export function ChatItem({
   /** Subagentes deste chat (aninhados, recolhíveis). */
   childChats?: Chat[]
 }): React.JSX.Element {
+  const groups = useProjects((s) => s.groups[chat.projectId] ?? NO_GROUPS)
+  const groupsSupported = useProjects((s) => s.groupsSupported)
   const selected = useUi((s) => s.chatId === chat.id)
   const childSelected = useUi((s) => childChats.some((c) => c.id === s.chatId))
   const [editing, setEditing] = useState(false)
+  const renameFromMenu = useRef(false)
   const [confirming, setConfirming] = useState(false)
   const [openPref, setOpen] = useState<boolean | null>(null)
   const hasChildren = childChats.length > 0
@@ -134,6 +151,11 @@ export function ChatItem({
         role="button"
         tabIndex={0}
         data-chat-id={chat.id}
+        draggable={!editing && groupsSupported}
+        onDragStart={(e) => {
+          e.dataTransfer.setData(DND_CHAT, chat.id)
+          e.dataTransfer.effectAllowed = 'move'
+        }}
         title={editing ? undefined : `${chat.title} — duplo clique para renomear`}
         className={cn(
           'group flex h-7 cursor-default items-center gap-2 rounded-md pr-1 pl-7 text-xs text-foreground/80 outline-none select-none hover:bg-accent/60 focus-visible:ring-1 focus-visible:ring-ring',
@@ -171,19 +193,78 @@ export function ChatItem({
           <span className="min-w-0 flex-1 truncate">{chat.title}</span>
         )}
         {!editing && (
-          <button
-            type="button"
-            aria-label="Excluir chat"
-            title="Excluir chat"
-            className="flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-background hover:text-destructive focus-visible:opacity-100"
-            onClick={(e) => {
-              e.stopPropagation()
-              setConfirming(true)
-            }}
-            onDoubleClick={(e) => e.stopPropagation()}
-          >
-            <Trash2 className="size-3" />
-          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="Opções do chat"
+                title="Opções do chat"
+                className="flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-background focus-visible:opacity-100 data-[state=open]:opacity-100"
+                onClick={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => e.stopPropagation()}
+              >
+                <MoreHorizontal className="size-3.5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              className="w-52"
+              // Eventos do portal sobem pela árvore React até a linha: não selecionar/renomear.
+              onClick={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => e.stopPropagation()}
+              onCloseAutoFocus={(e) => {
+                if (renameFromMenu.current) {
+                  renameFromMenu.current = false
+                  e.preventDefault()
+                  setEditing(true)
+                }
+              }}
+            >
+              <DropdownMenuItem
+                onSelect={() => {
+                  renameFromMenu.current = true
+                }}
+              >
+                Renomear
+              </DropdownMenuItem>
+              {groupsSupported && (
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>Mover para grupo</DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-48">
+                    <DropdownMenuItem
+                      disabled={!chat.groupId}
+                      onSelect={() => void moveChatToGroup(chat.id, null)}
+                    >
+                      Sem grupo
+                    </DropdownMenuItem>
+                    {sortGroups(groups).map((g) => (
+                      <DropdownMenuItem
+                        key={g.id}
+                        disabled={chat.groupId === g.id}
+                        onSelect={() => void moveChatToGroup(chat.id, g.id)}
+                      >
+                        <span className="truncate">{g.name}</span>
+                      </DropdownMenuItem>
+                    ))}
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onSelect={() => void newGroup(chat.projectId, 'Novo grupo', chat.id)}
+                    >
+                      Novo grupo
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              )}
+              <DropdownMenuItem onSelect={() => void continueInNewChat(chat.id)}>
+                Continuar em novo chat
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem variant="destructive" onSelect={() => setConfirming(true)}>
+                Excluir
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         )}
       </div>
       {hasChildren && open && childChats.map((c) => <ChildItem key={c.id} chat={c} />)}

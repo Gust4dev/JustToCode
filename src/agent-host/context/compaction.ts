@@ -14,10 +14,17 @@ export interface CompactionDeps {
   summarizer: Summarizer
 }
 
-/** Únicos, na ordem: cfg.summarizerModel, cfg.lightCombo, chatCombo (ignora vazios). */
-export function summarizerModels(cfg: AppConfig, chatCombo: string): string[] {
+/**
+ * Únicos, na ordem: chatSummarizer (ajuste do chat), cfg.summarizerModel, cfg.lightCombo,
+ * chatCombo (ignora vazios).
+ */
+export function summarizerModels(
+  cfg: AppConfig,
+  chatCombo: string,
+  chatSummarizer?: string | null
+): string[] {
   const out: string[] = []
-  for (const m of [cfg.summarizerModel, cfg.lightCombo, chatCombo]) {
+  for (const m of [chatSummarizer, cfg.summarizerModel, cfg.lightCombo, chatCombo]) {
     const v = m?.trim()
     if (v && !out.includes(v)) out.push(v)
   }

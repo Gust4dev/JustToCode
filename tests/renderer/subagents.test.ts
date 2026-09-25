@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { Chat, ToolCallRecord } from '@shared/domain'
+import { DEFAULT_CHAT_SETTINGS, type Chat, type ToolCallRecord } from '@shared/domain'
 import {
   applySubagentEvent,
   hydrateSubagents,
@@ -19,6 +19,12 @@ const chat = (id: string, over: Partial<Chat> = {}): Chat => ({
   permissionMode: 'ask',
   status: 'idle',
   createdAt: 1,
+  groupId: null,
+  continuedFromChatId: null,
+  maxIterations: 50,
+  tokenBudget: null,
+  settings: { ...DEFAULT_CHAT_SETTINGS },
+  lastReportedModel: null,
   ...over
 })
 

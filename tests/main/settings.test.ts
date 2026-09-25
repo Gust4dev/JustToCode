@@ -77,4 +77,23 @@ describe('settings', () => {
     expect(cfg.agentRoots).toEqual(['C:/agents'])
     expect(cfg.pluginRoots).toEqual(DEFAULT_CONFIG.pluginRoots)
   })
+  it('ruleRoots: padrão ~/.claude/rules; lista inválida cai no padrão; válida é mantida', () => {
+    const f = file()
+    writeFileSync(f, JSON.stringify({ defaultCombo: 'dev' }))
+    expect(loadSettings(f, codec).ruleRoots).toEqual(['~/.claude/rules'])
+    writeFileSync(f, JSON.stringify({ ruleRoots: [1] }))
+    expect(loadSettings(f, codec).ruleRoots).toEqual(DEFAULT_CONFIG.ruleRoots)
+    writeFileSync(f, JSON.stringify({ ruleRoots: ['C:/rules', '~/x'] }))
+    expect(loadSettings(f, codec).ruleRoots).toEqual(['C:/rules', '~/x'])
+  })
+  it('reasoningStyle: padrão param, aceita valores válidos e ignora inválidos', () => {
+    const f = file()
+    expect(loadSettings(f, codec).reasoningStyle).toBe('param')
+    expect(saveSettings(f, codec, { reasoningStyle: 'both' }).reasoningStyle).toBe('both')
+    expect(loadSettings(f, codec).reasoningStyle).toBe('both')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(saveSettings(f, codec, { reasoningStyle: 'nope' as any }).reasoningStyle).toBe('both')
+    writeFileSync(f, JSON.stringify({ reasoningStyle: 'xyz' }))
+    expect(loadSettings(f, codec).reasoningStyle).toBe('param')
+  })
 })

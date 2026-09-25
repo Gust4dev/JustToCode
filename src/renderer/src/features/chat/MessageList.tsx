@@ -4,14 +4,25 @@ import {
   CircleSlash,
   Layers,
   LoaderCircle,
+  Pause,
+  Play,
   Settings,
   TriangleAlert
 } from 'lucide-react'
-import type { Approval } from '@shared/domain'
+import type { Approval, Instruction } from '@shared/domain'
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@renderer/lib/utils'
 import { openSettings } from '@renderer/stores/settingsDialog'
-import { buildTimeline, type ChatViewState, type LiveToolCall } from './chatStore'
+import {
+  buildTimeline,
+  type ChatViewState,
+  type LiveToolCall,
+  type MemoryMark,
+  type PauseReason
+} from './chatStore'
+import { MemoryCard } from '@renderer/features/instructions/MemoryCard'
+import { formatTokens } from '@renderer/features/context/format'
+import { PAUSE_LABEL } from './runControls'
 import { CompactionDialog, type CompactionTarget } from './CompactionDialog'
 import { CompactionDivider } from './CompactionDivider'
 import { Markdown } from './Markdown'
@@ -19,6 +30,9 @@ import { MessageItem, Reasoning, UserBubble, type ReceiptItem } from './MessageI
 import { ToolCallCard } from './ToolCallCard'
 
 const NO_CALLS: LiveToolCall[] = []
+const NO_MEMORIES: MemoryMark[] = []
+
+export type MemoryChange = Partial<{ instruction: Instruction; undone: boolean }>
 
 export interface PendingMessage {
   text: string
@@ -35,14 +49,49 @@ function Divider({ children }: { children: React.ReactNode }): React.JSX.Element
   )
 }
 
-function ModelSwitch({ from, to }: { from: string | null; to: string }): React.JSX.Element {
+function ModelSwitch({
+  from,
+  to,
+  window
+}: {
+  from: string | null
+  to: string
+  window: number | null
+}): React.JSX.Element {
   return (
     <Divider>
       modelo mudou:
       <span className="font-mono">{from ?? '—'}</span>
       <ArrowRight className="size-3" />
       <span className="font-mono">{to}</span>
+      {window !== null && (
+        <span title={`Janela de ${window.toLocaleString('pt-BR')} tokens`}>
+          · janela {formatTokens(window)}
+        </span>
+      )}
     </Divider>
+  )
+}
+
+function PausedCard({
+  reason,
+  onContinue
+}: {
+  reason: PauseReason
+  onContinue(): void
+}): React.JSX.Element {
+  return (
+    <div
+      role="status"
+      className="flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs"
+    >
+      <Pause className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+      <p className="min-w-0 flex-1">{PAUSE_LABEL[reason]}</p>
+      <Button variant="outline" size="xs" className="shrink-0" onClick={onContinue}>
+        <Play />
+        Continuar
+      </Button>
+    </div>
   )
 }
 
@@ -79,13 +128,58 @@ function ErrorBanner({ error }: { error: { message: string; code?: string } }): 
 export function MessageList({
   state,
   approvals,
-  pending
+  pending,
+  onContinue,
+  onMemoryChange
 }: {
   state: ChatViewState
   approvals: Record<string, Approval>
   pending: PendingMessage | null
+  /** Retoma um turno pausado (`engine.continue`); sem ele o card não mostra o botão. */
+  onContinue?(): void
+  /** Card de memória editado/desfeito. */
+  onMemoryChange?(toolCallId: string, change: MemoryChange): void
 }): React.JSX.Element {
-  const { messages, toolCalls, streaming, modelSwitches, lastError, status, compactions } = state
+  const { messages, toolCalls, streaming, modelSwitches, lastError, status, compactions, paused } =
+    state
+  const memories = state.memories ?? NO_MEMORIES
+
+  // Cada card de memória vai depois da mensagem da tool call; sem ela, depois do seq em que chegou.
+  const memoryAnchors = useMemo(() => {
+    const ids = new Set(messages.map((m) => m.id))
+    // Só mensagens que viram balão ancoram (tool/summary não aparecem como mensagem).
+    const shownSeqs = messages
+      .filter(
+        (m) => m.kind !== 'summary' && (m.message.role === 'user' || m.message.role === 'assistant')
+      )
+      .map((m) => m.seq)
+    const anchorSeq = (seq: number): number =>
+      shownSeqs.reduce((best, x) => (x <= seq && x > best ? x : best), 0)
+    const byMessage = new Map<string, MemoryMark[]>()
+    const bySeq = new Map<number, MemoryMark[]>()
+    for (const mk of memories) {
+      const mid = toolCalls[mk.toolCallId]?.messageId
+      if (mid && ids.has(mid)) byMessage.set(mid, [...(byMessage.get(mid) ?? []), mk])
+      else {
+        const k = anchorSeq(mk.afterSeq)
+        bySeq.set(k, [...(bySeq.get(k) ?? []), mk])
+      }
+    }
+    return { byMessage, bySeq }
+  }, [memories, messages, toolCalls])
+
+  const memoryCards = (list: MemoryMark[] | undefined): React.ReactNode =>
+    list?.map((mk) => (
+      <MemoryCard
+        key={`mem-${mk.toolCallId}`}
+        instruction={mk.instruction}
+        created={mk.created}
+        at={mk.at}
+        undone={mk.undone}
+        onEdited={(i) => onMemoryChange?.(mk.toolCallId, { instruction: i })}
+        onUndone={() => onMemoryChange?.(mk.toolCallId, { undone: true })}
+      />
+    ))
 
   const { byMessage, orphans } = useMemo(() => {
     const ids = new Set(messages.map((m) => m.id))
@@ -121,8 +215,9 @@ export function MessageList({
       {modelSwitches
         .filter((s) => s.afterSeq === 0)
         .map((s, i) => (
-          <ModelSwitch key={`s0-${i}`} from={s.from} to={s.to} />
+          <ModelSwitch key={`s0-${i}`} from={s.from} to={s.to} window={s.window} />
         ))}
+      {memoryCards(memoryAnchors.bySeq.get(0))}
       {timeline.map((item) => {
         if (item.type === 'compaction')
           return (
@@ -171,10 +266,12 @@ export function MessageList({
             ) : (
               body
             )}
+            {memoryCards(memoryAnchors.byMessage.get(m.id))}
+            {memoryCards(memoryAnchors.bySeq.get(m.seq))}
             {modelSwitches
               .filter((s) => s.afterSeq === m.seq)
               .map((s, i) => (
-                <ModelSwitch key={`s${m.seq}-${i}`} from={s.from} to={s.to} />
+                <ModelSwitch key={`s${m.seq}-${i}`} from={s.from} to={s.to} window={s.window} />
               ))}
           </Fragment>
         )
@@ -205,6 +302,7 @@ export function MessageList({
         </Divider>
       )}
       {lastError && <ErrorBanner error={lastError} />}
+      {paused && !busy && onContinue && <PausedCard reason={paused} onContinue={onContinue} />}
       <CompactionDialog target={opened} onOpenChange={(o) => !o && setOpened(null)} />
     </div>
   )

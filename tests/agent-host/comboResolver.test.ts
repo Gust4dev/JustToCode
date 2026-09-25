@@ -223,3 +223,34 @@ describe('comboHandlers', () => {
     expect(windows.get('b')).toBeNull()
   })
 })
+
+describe('ComboResolver: janela do primário e do modelo reportado', () => {
+  it('primaryWindow: primeiro membro não ignorado com janela conhecida', async () => {
+    expect(await resolver().primaryWindow('dev')).toEqual({ window: 200_000, model: 'a' })
+    overrides.set('dev', { ignored: ['a'] })
+    expect(await resolver().primaryWindow('dev')).toEqual({ window: 64_000, model: 'b' })
+  })
+
+  it('primaryWindow: pula membro sem janela; combo desconhecida → fallback', async () => {
+    overrides.set('dev', { members: ['sem-janela', 'c'] })
+    expect(await resolver().primaryWindow('dev')).toEqual({ window: 128_000, model: 'c' })
+    expect(await resolver().primaryWindow('nao-existe')).toEqual({ window: 128_000, model: null })
+  })
+
+  it('primaryWindow: override manual de janela vence', async () => {
+    overrides.set('dev', { windowOverride: 50_000 })
+    expect(await resolver().primaryWindow('dev')).toEqual({ window: 50_000, model: null })
+  })
+
+  it('windowForReported: igualdade, sufixo após /, /v1/models e null', async () => {
+    models.push(model('cx/gpt-oss', 131_072), model('avulso', 16_000))
+    overrides.set('dev', { members: ['a', 'cx/gpt-oss'] })
+    const r = resolver()
+    expect(await r.windowForReported('dev', 'a')).toBe(200_000)
+    expect(await r.windowForReported('dev', 'gpt-oss')).toBe(131_072)
+    expect(await r.windowForReported('dev', 'cx/gpt-oss')).toBe(131_072)
+    // não é membro, mas o router lista
+    expect(await r.windowForReported('dev', 'avulso')).toBe(16_000)
+    expect(await r.windowForReported('dev', 'ninguem')).toBeNull()
+  })
+})

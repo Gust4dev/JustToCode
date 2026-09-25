@@ -7,7 +7,12 @@ import type { HostContext } from '../../src/agent-host/context'
 import type { BlobStore } from '../../src/agent-host/blobs'
 import type { Tool } from '../../src/agent-host/tools/types'
 import type { PermissionGate, PermissionInput } from '../../src/agent-host/services/types'
-import type { Chat, ChatStatus, PermissionMode } from '../../src/shared/domain'
+import {
+  DEFAULT_CHAT_SETTINGS,
+  type Chat,
+  type ChatStatus,
+  type PermissionMode
+} from '../../src/shared/domain'
 import type { EngineEvent } from '../../src/shared/events'
 import { FileChangeRepo } from '../../src/agent-host/repo/fileChanges'
 import {
@@ -68,7 +73,13 @@ function mkChat(
     combo: 'c',
     permissionMode,
     status,
-    createdAt: 0
+    createdAt: 0,
+    groupId: null,
+    continuedFromChatId: null,
+    maxIterations: 50,
+    tokenBudget: null,
+    settings: { ...DEFAULT_CHAT_SETTINGS },
+    lastReportedModel: null
   })
 }
 

@@ -17,6 +17,8 @@ import { fileTools } from '../tools'
 import { commandTools } from '../tools/commandTools'
 import type { Tool } from '../tools/types'
 import { createSkillTool } from '../tools/skill'
+import { createMemoryTools } from '../tools/memory'
+import { MemoryService } from '../memory/memory'
 import { createTaskTool } from '../tools/task'
 import { createAgentEngine, type AgentEngine } from '../engine/agentEngine'
 import { createReadToolOutputTool } from '../engine/toolOutput'
@@ -26,6 +28,15 @@ import { ModelWindowRepo } from '../repo/modelWindows'
 import { createComboResolver, type ComboResolver } from '../context/comboResolver'
 import { CompactionRepo } from '../repo/compactions'
 import { createSummarizer, type Summarizer } from '../context/summarizer'
+import { ChatGroupRepo } from '../repo/chatGroups'
+import { createContinuation, type Continuation } from './continuation'
+import { InstructionRepo } from '../repo/instructions'
+import { TouchedPathRepo } from '../repo/touchedPaths'
+import {
+  createInstructionResolver,
+  resolveInstructions,
+  type InstructionResolver
+} from '../ecosystem/resolver'
 
 export interface Services {
   projects: ProjectRepo
@@ -45,6 +56,14 @@ export interface Services {
   comboResolver: ComboResolver
   compactions: CompactionRepo
   summarizer: Summarizer
+  groups: ChatGroupRepo
+  continuation: Continuation
+  instructionRepo: InstructionRepo
+  touchedPaths: TouchedPathRepo
+  /** Resolvedor de instruções (prompt, `@nome`, caminhos tocados, provedores dinâmicos). */
+  instructions: InstructionResolver
+  /** Memórias (`kind: memory`): save/undo/lote por origem + seção `# Memory` do prompt. */
+  memory: MemoryService
   /** Chats marcados como `interrupted` na inicialização. */
   interrupted: string[]
   getConfig: () => AppConfig
@@ -112,7 +131,40 @@ export function createServices(ctx: HostContext, opts: ServiceOptions = {}): Ser
     if (!engineRef) throw new Error('engine não inicializado')
     return engineRef.runSubagent(req)
   })
-  const tools = [...fileTools, ...commandTools, createSkillTool(getConfig), taskTool]
+  const instructionRepo = new InstructionRepo(ctx.db)
+  const touchedPaths = new TouchedPathRepo(ctx.db)
+  const instructions = createInstructionResolver({ repo: instructionRepo, touched: touchedPaths })
+  const skillTool = createSkillTool(getConfig, (tctx) => {
+    const chat = chats.get(tctx.chatId)
+    const cfg = getConfig()
+    const candidates = instructions.candidates({
+      projectRoot: tctx.projectRoot,
+      projectId: tctx.projectId,
+      groupId: chat?.groupId ?? null,
+      chatId: tctx.chatId,
+      cfg
+    })
+    return resolveInstructions(candidates, {
+      chatId: tctx.chatId,
+      touchedPaths: [],
+      manualNames: [],
+      budget: cfg.alwaysInstructionBudgetTokens
+    }).listed
+  })
+  const memory = new MemoryService(instructionRepo)
+  instructions.registerSection((c) => memory.section(c))
+  const memoryTools = createMemoryTools({
+    memory,
+    groupIdOf: (chatId) => chats.get(chatId)?.groupId ?? null,
+    requestIdOf: (chatId) => requests.list(chatId).at(-1)?.id ?? null,
+    thirdPartyOf: (chatId) =>
+      (instructions.lastActive(chatId)?.items ?? [])
+        .filter((i) => i.included !== 'dropped')
+        .map((i) => i.id)
+        .filter((id) => instructionRepo.get(id)?.source.type === 'github'),
+    onSaved: (e) => ctx.emit({ type: 'memory_saved', ...e })
+  })
+  const tools = [...fileTools, ...commandTools, skillTool, taskTool, ...memoryTools]
   const readToolOutput = createReadToolOutputTool(toolCalls)
   const comboOverrides = new ComboOverrideRepo(ctx.db)
   const modelWindows = new ModelWindowRepo(ctx.db)
@@ -126,6 +178,8 @@ export function createServices(ctx: HostContext, opts: ServiceOptions = {}): Ser
     })
   const compactions = new CompactionRepo(ctx.db)
   const summarizer = createSummarizer(model)
+  const groups = new ChatGroupRepo(ctx.db)
+  const continuation = createContinuation({ ctx, chats, groups, messages, summarizer, getConfig })
 
   // Crash anterior do host: turnos em andamento não podem ser retomados.
   const interrupted = chats.markInterrupted()
@@ -148,6 +202,7 @@ export function createServices(ctx: HostContext, opts: ServiceOptions = {}): Ser
     compactions,
     summarizer,
     retryDelaysMs: opts.retryDelaysMs,
+    instructions,
     onConfig: opts.onConfig ?? (opts.getConfig ? undefined : onHostConfig)
   })
   engineRef = engine
@@ -170,6 +225,12 @@ export function createServices(ctx: HostContext, opts: ServiceOptions = {}): Ser
     comboResolver,
     compactions,
     summarizer,
+    groups,
+    continuation,
+    instructionRepo,
+    touchedPaths,
+    instructions,
+    memory,
     interrupted,
     getConfig,
     commandWindows,

@@ -76,5 +76,63 @@ export const migrations: string[] = [
   `,
   `
   create index if not exists chats_by_parent on chats(parent_chat_id);
+  `,
+  `
+  create table chat_groups (
+    id text primary key, project_id text not null references projects(id) on delete cascade,
+    name text not null, sort_order integer not null default 0,
+    collapsed integer not null default 0, created_at integer not null
+  );
+  create index chat_groups_by_project on chat_groups(project_id, sort_order);
+  alter table chats add column group_id text references chat_groups(id) on delete set null;
+  alter table chats add column continued_from_chat_id text;
+  alter table chats add column max_iterations integer default 50;
+  alter table chats add column token_budget integer;
+  alter table chats add column settings_json text;
+  alter table chats add column last_reported_model text;
+  create index chats_by_group on chats(group_id);
+  create table queued_messages (
+    id text primary key, chat_id text not null references chats(id) on delete cascade,
+    text text not null, attachments_json text not null default '[]',
+    position integer not null, created_at integer not null
+  );
+  create index queued_messages_by_chat on queued_messages(chat_id, position);
+  create table chat_queue_state (
+    chat_id text primary key references chats(id) on delete cascade,
+    paused integer not null default 0, pause_reason text
+  );
+  create table instructions (
+    id text primary key, kind text not null, scope text not null, scope_id text,
+    name text not null, description text not null default '', trigger text not null,
+    globs_json text not null default '[]', body text not null, format text not null default 'md',
+    source_json text not null, enabled integer not null default 1, origin_json text,
+    created_at integer not null, updated_at integer not null
+  );
+  create index instructions_by_scope on instructions(scope, scope_id);
+  create index instructions_by_kind on instructions(kind);
+  create table instruction_toggles (
+    instruction_id text primary key, enabled integer not null
+  );
+  create table chat_touched_paths (
+    chat_id text not null references chats(id) on delete cascade, path text not null,
+    primary key (chat_id, path)
+  );
+  `,
+  // instructions.scope_id é polimórfico (sem FK): triggers limpam as instruções do escopo
+  // apagado. Disparam também nas exclusões em cascata (projeto → chats/grupos, chat → subagentes).
+  `
+  create trigger instructions_cleanup_project after delete on projects begin
+    delete from instructions where scope = 'project' and scope_id = old.id;
+  end;
+  create trigger instructions_cleanup_group after delete on chat_groups begin
+    delete from instructions where scope = 'group' and scope_id = old.id;
+  end;
+  create trigger instructions_cleanup_chat after delete on chats begin
+    delete from instructions where scope = 'chat' and scope_id = old.id;
+  end;
+  delete from instructions where
+    (scope = 'project' and scope_id not in (select id from projects)) or
+    (scope = 'group' and scope_id not in (select id from chat_groups)) or
+    (scope = 'chat' and scope_id not in (select id from chats));
   `
 ]
