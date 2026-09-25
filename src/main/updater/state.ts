@@ -1,6 +1,9 @@
 export type UpdateState =
+  // idle: nunca verificado (ou última verificação automática falhou em silêncio).
   | { phase: 'idle' }
   | { phase: 'checking' }
+  // none: verificado e não há atualização (a UI mostra "versão mais recente").
+  | { phase: 'none' }
   | { phase: 'available'; version: string; notes: string }
   | { phase: 'downloading'; version: string; notes: string; percent: number }
   | { phase: 'ready'; version: string; notes: string }
@@ -12,7 +15,7 @@ export type UpdateEvent =
   | { type: 'available'; version: string; notes: string }
   | { type: 'progress'; percent: number }
   | { type: 'downloaded' }
-  // silent: erro de verificação automática (startup/horária) — não incomoda o usuário.
+  // silent: erro de verificação automática (startup/periódica/foco) — não incomoda o usuário.
   | { type: 'error'; message: string; silent?: boolean }
 
 export function reduceUpdate(s: UpdateState, e: UpdateEvent): UpdateState {
@@ -20,7 +23,7 @@ export function reduceUpdate(s: UpdateState, e: UpdateEvent): UpdateState {
     case 'check':
       return s.phase === 'downloading' || s.phase === 'ready' ? s : { phase: 'checking' }
     case 'none':
-      return { phase: 'idle' }
+      return { phase: 'none' }
     case 'available':
       return { phase: 'available', version: e.version, notes: e.notes }
     case 'progress':

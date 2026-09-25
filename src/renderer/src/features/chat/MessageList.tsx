@@ -2,6 +2,7 @@ import { Fragment, useMemo, useState } from 'react'
 import {
   ArrowRight,
   CircleSlash,
+  ExternalLink,
   Layers,
   LoaderCircle,
   Pause,
@@ -13,6 +14,9 @@ import type { Approval, Instruction } from '@shared/domain'
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@renderer/lib/utils'
 import { openSettings } from '@renderer/stores/settingsDialog'
+import { openExternal } from '@renderer/features/components/hooks'
+import { ROUTER_DASHBOARD } from '@renderer/features/components/format'
+import { errorAction, splitInlineCode } from './errorBanner'
 import {
   buildTimeline,
   type ChatViewState,
@@ -96,6 +100,7 @@ function PausedCard({
 }
 
 function ErrorBanner({ error }: { error: { message: string; code?: string } }): React.JSX.Element {
+  const action = errorAction(error.code)
   if (error.code === 'CANCELLED')
     return (
       <Divider>
@@ -109,8 +114,29 @@ function ErrorBanner({ error }: { error: { message: string; code?: string } }): 
       className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"
     >
       <TriangleAlert className="mt-px size-3.5 shrink-0" />
-      <p className="min-w-0 flex-1 break-words whitespace-pre-wrap">{error.message}</p>
-      {error.code === 'AUTH' && (
+      <p className="min-w-0 flex-1 break-words whitespace-pre-wrap">
+        {splitInlineCode(error.message).map((seg, i) =>
+          seg.code ? (
+            <code key={i} className="rounded bg-destructive/10 px-1 font-mono">
+              {seg.text}
+            </code>
+          ) : (
+            <Fragment key={i}>{seg.text}</Fragment>
+          )
+        )}
+      </p>
+      {action === 'router-dashboard' && (
+        <Button
+          variant="outline"
+          size="xs"
+          className="shrink-0 text-foreground"
+          onClick={() => openExternal(ROUTER_DASHBOARD)}
+        >
+          <ExternalLink />
+          Abrir dashboard do 9router
+        </Button>
+      )}
+      {action === 'settings' && (
         <Button
           variant="outline"
           size="xs"

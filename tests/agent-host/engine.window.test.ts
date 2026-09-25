@@ -259,3 +259,50 @@ describe('engine: contínuo e orçamento', () => {
     expect(budgets[0].budget).toBeNull()
   })
 })
+
+describe('engine: modelo descontinuado (410)', () => {
+  it('410 do 9router → turn_error MODEL_GONE, warning na combo e primaryWindow pula o membro', async () => {
+    const goneBody = {
+      type: 'about:blank',
+      title: 'Gone',
+      status: 410,
+      detail:
+        "The model 'minimaxai/minimax-m3' has reached its end of life on 2026-09-09T09:00:00Z and is no longer available."
+    }
+    const env = await setup([{ status: 410, errorBody: goneBody }], {
+      models: [
+        { id: 'fake/combo', owned_by: 'combo' },
+        { id: 'nvidia/minimaxai/minimax-m3', owned_by: 'x', context_length: 200_000 },
+        { id: 'm/next', owned_by: 'x', context_length: 64_000 }
+      ]
+    })
+    env.services.comboOverrides.set('fake/combo', {
+      members: ['nvidia/minimaxai/minimax-m3', 'm/next']
+    })
+    expect(await env.services.comboResolver.primaryWindow('fake/combo')).toEqual({
+      window: 200_000,
+      model: 'nvidia/minimaxai/minimax-m3'
+    })
+
+    await env.services.engine.send(env.chat.id, 'oi', [])
+    const [end] = await waitEnds(env.events, 1)
+    expect(end).toEqual({
+      type: 'turn_error',
+      chatId: env.chat.id,
+      code: 'MODEL_GONE',
+      message:
+        'O modelo `minimaxai/minimax-m3` da combo `fake/combo` foi descontinuado pelo provider. Remova-o da combo no dashboard do 9router ou troque a combo do chat.'
+    })
+    // Não é retryable: um único request.
+    expect(env.router.requests).toHaveLength(1)
+
+    const info = await env.call('combos.info', { combo: 'fake/combo' })
+    expect(info.warning).toContain(
+      'Membro nvidia/minimaxai/minimax-m3 respondeu 410 (descontinuado) — remova no 9router'
+    )
+    expect(await env.services.comboResolver.primaryWindow('fake/combo')).toEqual({
+      window: 64_000,
+      model: 'm/next'
+    })
+  })
+})

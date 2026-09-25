@@ -106,6 +106,8 @@ export interface EngineState {
   windowFor(model: string, reported?: string | null): WindowInfo
   /** Atualiza a janela via ComboResolver (invalida se a config do router mudou; espera no máx. alguns segundos). */
   ensureModels(model: string, reported?: string | null): Promise<void>
+  /** Esquece as janelas em cache da combo (ex.: membro marcado como descontinuado). */
+  forgetWindows(model: string): void
   setContext(chatId: string, c: ContextState): void
   lastContext(chatId: string): ContextState | null
 }
@@ -127,6 +129,14 @@ export async function chatWindow(
   await s.ensureModels(model, reported)
   const r = s.windowFor(model, reported)
   return r.window !== null ? r : primary
+}
+
+/** Mensagem do erro `MODEL_GONE` (modelo descontinuado pelo provider). */
+export function modelGoneMessage(gone: string | undefined, combo: string | null): string {
+  if (gone && combo && gone !== combo) {
+    return `O modelo \`${gone}\` da combo \`${combo}\` foi descontinuado pelo provider. Remova-o da combo no dashboard do 9router ou troque a combo do chat.`
+  }
+  return `O modelo \`${gone ?? combo ?? '?'}\` não está mais disponível.`
 }
 
 export function shellLabel(pref: AppConfig['shell']): string {
@@ -733,6 +743,13 @@ export async function runTurn(
         const e = out.error
         if (e.o.isAuth) return fail(AUTH_MESSAGE, 'AUTH')
         if (e.o.isContextLength) return fail(e.message, 'CONTEXT_LENGTH')
+        if (e.o.isModelGone) {
+          if (e.o.goneModel) {
+            d.resolver.markGone(model, e.o.goneModel)
+            s.forgetWindows(model)
+          }
+          return fail(modelGoneMessage(e.o.goneModel, model), 'MODEL_GONE')
+        }
         return fail(e.message, e.o.code ?? 'MODEL_ERROR')
       }
       if (out.kind === 'cancelled') {

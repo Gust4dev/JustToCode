@@ -16,6 +16,11 @@ export interface ComboResolver {
    * senão procura em `/v1/models`; null se desconhecida.
    */
   windowForReported(combo: string, reported: string): Promise<number | null>
+  /**
+   * Marca (em memória, por sessão do host) o membro da combo que o provider descontinuou (410):
+   * `info` avisa e `primaryWindow` o pula. Casa por igualdade ou sufixo após `/`.
+   */
+  markGone(combo: string, model: string): void
   invalidate(): void
 }
 
@@ -42,6 +47,10 @@ export function createComboResolver(d: {
 }): ComboResolver {
   const now = d.now ?? Date.now
   let cache: { at: number; models: ModelInfo[] } | null = null
+  /** combo → modelos reportados como descontinuados (ids como vieram do erro). */
+  const gone = new Map<string, Set<string>>()
+  const isGone = (combo: string, member: string): boolean =>
+    [...(gone.get(combo) ?? [])].some((g) => matchesMember(member, g))
 
   const models = async (): Promise<ModelInfo[]> => {
     if (cache && now() - cache.at < MODELS_TTL_MS) return cache.models
@@ -103,6 +112,12 @@ export function createComboResolver(d: {
       }
     }
 
+    for (const m of members) {
+      if (isGone(combo, m)) {
+        warnings.push(`Membro ${m} respondeu 410 (descontinuado) — remova no 9router.`)
+      }
+    }
+
     if (override?.windowOverride != null) {
       effectiveWindow = override.windowOverride
       limitingModel = 'manual'
@@ -132,7 +147,7 @@ export function createComboResolver(d: {
       const override = d.overrides.get(combo)
       if (override?.windowOverride != null) return { window: override.windowOverride, model: null }
       for (const m of i.members) {
-        if (i.ignored.includes(m)) continue
+        if (i.ignored.includes(m) || isGone(combo, m)) continue
         const w = i.windows[m]
         if (w != null) return { window: w, model: m }
       }
@@ -146,6 +161,11 @@ export function createComboResolver(d: {
       const manual = d.windows.get(reported)
       if (manual != null) return manual
       return (await models()).find((m) => m.id === reported)?.contextWindow ?? null
+    },
+    markGone(combo, model) {
+      let set = gone.get(combo)
+      if (!set) gone.set(combo, (set = new Set()))
+      set.add(model)
     },
     invalidate() {
       cache = null

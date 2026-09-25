@@ -22,6 +22,7 @@ import {
 import { Switch } from '@renderer/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@renderer/components/ui/tabs'
 import { ComboPanel } from '@renderer/features/context/ComboPanel'
+import { UpdateSection } from '@renderer/features/update/UpdateSection'
 import { call } from '@renderer/lib/host'
 
 const NONE = '__none__'
@@ -408,6 +409,7 @@ function GeneralFields({
           )}
         </Field>
       </div>
+      <UpdateSection />
     </>
   )
 }

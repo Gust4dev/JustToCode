@@ -157,6 +157,11 @@ export function createAgentEngine(base: EngineDeps): AgentEngine {
       reportedModels.set(chatId, model)
       if (d.chats.get(chatId)) d.chats.setLastReportedModel(chatId, model)
     },
+    forgetWindows(model) {
+      for (const k of [...windows.keys()]) {
+        if (k === model || k.startsWith(`${model}\n`)) windows.delete(k)
+      }
+    },
     windowFor(model, reported) {
       return windows.get(windowKey(model, reported)) ?? { window: null, limitingModel: null }
     },

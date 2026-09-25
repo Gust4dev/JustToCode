@@ -15,8 +15,21 @@ describe('reduceUpdate', () => {
     expect(s).toMatchObject({ phase: 'ready', version: '0.0.2' })
   })
 
-  it('sem update volta para idle', () => {
-    expect(reduceUpdate({ phase: 'checking' }, { type: 'none' })).toEqual(idle)
+  it('sem update vai para none (verificado), distinto de idle', () => {
+    const s = reduceUpdate({ phase: 'checking' }, { type: 'none' })
+    expect(s).toEqual({ phase: 'none' })
+    expect(s).not.toEqual(idle)
+  })
+
+  it('check a partir de none volta a verificar', () => {
+    expect(reduceUpdate({ phase: 'none' }, { type: 'check' })).toEqual({ phase: 'checking' })
+  })
+
+  it('erro manual depois de none é exibido', () => {
+    expect(reduceUpdate({ phase: 'none' }, { type: 'error', message: 'x' })).toEqual({
+      phase: 'error',
+      message: 'x'
+    })
   })
 
   it('check durante download não reinicia', () => {

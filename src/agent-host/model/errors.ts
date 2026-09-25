@@ -6,6 +6,10 @@ export interface ModelErrorInfo {
   retryable: boolean
   isContextLength: boolean
   isAuth: boolean
+  /** Modelo descontinuado/inexistente no provider (410, ou 404 com texto de modelo inexistente). */
+  isModelGone?: boolean
+  /** Id do modelo citado na mensagem (entre aspas, após "model"), quando `isModelGone`. */
+  goneModel?: string
 }
 
 export class ModelError extends Error {
@@ -40,6 +44,25 @@ const NETWORK_CODES = new Set([
 function isContextText(...parts: (string | undefined | null)[]): boolean {
   const text = parts.filter(Boolean).join(' ').toLowerCase()
   return CONTEXT_PATTERNS.some((p) => text.includes(p))
+}
+
+const GONE_PATTERNS = [
+  'model not found',
+  'does not exist',
+  'end of life',
+  'no longer available',
+  'model_not_found'
+]
+
+function isGoneText(text: string): boolean {
+  const t = text.toLowerCase()
+  return GONE_PATTERNS.some((p) => t.includes(p))
+}
+
+/** Id entre aspas simples/duplas logo após "model" (`The model 'x/y' has...` → `x/y`). */
+export function extractGoneModel(text: string): string | undefined {
+  const m = /model['"]?\s*[:=]?\s*['"`]([\w.@-][^'"`\s]*)['"`]/i.exec(text)
+  return m?.[1]
 }
 
 function errorCode(e: unknown): string | undefined {
@@ -81,9 +104,21 @@ export function toModelError(e: unknown): ModelError {
     const message = e.message || `Erro HTTP ${status ?? '?'}`
     const isAuth = status === 401 || code === 'invalid_api_key'
     const isContextLength = isContextText(message, code, safeJson(e.error))
+    const raw = safeJson(e.error)
+    const isModelGone =
+      !isAuth && (status === 410 || (status === 404 && isGoneText(`${message} ${raw}`)))
     const retryable =
-      !isAuth && !isContextLength && (status === 429 || (status !== undefined && status >= 500))
-    return new ModelError(message, { status, code, retryable, isContextLength, isAuth })
+      !isAuth &&
+      !isContextLength &&
+      !isModelGone &&
+      (status === 429 || (status !== undefined && status >= 500))
+    const info: ModelErrorInfo = { status, code, retryable, isContextLength, isAuth }
+    if (isModelGone) {
+      info.isModelGone = true
+      const goneModel = extractGoneModel(message) ?? extractGoneModel(raw)
+      if (goneModel) info.goneModel = goneModel
+    }
+    return new ModelError(message, info)
   }
 
   const message = e instanceof Error ? e.message : String(e)

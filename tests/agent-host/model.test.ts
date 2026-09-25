@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
+import { APIError } from 'openai'
 import { startFakeRouter, chunk, type FakeRouter, type FakeTurn } from '../helpers/fakeRouter'
 import { createOpenAiClient } from '../../src/agent-host/model/openaiClient'
 import { ModelError, toModelError } from '../../src/agent-host/model/errors'
@@ -275,5 +276,50 @@ describe('toModelError', () => {
   it('ECONNREFUSED → retryable', () => {
     const e = Object.assign(new Error('connect'), { code: 'ECONNREFUSED' })
     expect(toModelError(e).o.retryable).toBe(true)
+  })
+
+  const GONE_BODY = {
+    type: 'about:blank',
+    title: 'Gone',
+    status: 410,
+    detail:
+      "The model 'minimaxai/minimax-m3' has reached its end of life on 2026-09-09T09:00:00Z and is no longer available."
+  }
+  it('410 do 9router (corpo real) → isModelGone + goneModel, não retryable', () => {
+    // O client do SDK embrulha corpos sem `error` em `{ error: corpo }` antes do generate.
+    const e = toModelError(APIError.generate(410, { error: GONE_BODY }, undefined, new Headers()))
+    expect(e.o).toMatchObject({
+      status: 410,
+      isModelGone: true,
+      goneModel: 'minimaxai/minimax-m3',
+      retryable: false,
+      isAuth: false,
+      isContextLength: false
+    })
+  })
+  it('404 "model not found" → isModelGone', () => {
+    const e = toModelError(
+      APIError.generate(
+        404,
+        { error: { message: 'The model "cx/gpt-9" does not exist', code: 'model_not_found' } },
+        undefined,
+        new Headers()
+      )
+    )
+    expect(e.o.isModelGone).toBe(true)
+    expect(e.o.goneModel).toBe('cx/gpt-9')
+    expect(e.o.retryable).toBe(false)
+    expect(e.o.code).toBe('model_not_found')
+  })
+  it('404 genérico e 500 não são isModelGone', () => {
+    const nf = toModelError(
+      APIError.generate(404, { error: { message: 'route missing' } }, undefined, new Headers())
+    )
+    expect(nf.o.isModelGone).toBeUndefined()
+    const s5 = toModelError(
+      APIError.generate(500, { error: { message: 'boom' } }, undefined, new Headers())
+    )
+    expect(s5.o.isModelGone).toBeUndefined()
+    expect(s5.o.retryable).toBe(true)
   })
 })

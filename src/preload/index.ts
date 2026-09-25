@@ -71,6 +71,8 @@ const api = {
       void ipcRenderer.invoke('update:get').then(cb)
       return () => ipcRenderer.removeListener('update:state', h)
     },
+    info: (): Promise<{ version: string; isPackaged: boolean }> =>
+      ipcRenderer.invoke('update:info'),
     check: (): Promise<void> => ipcRenderer.invoke('update:check'),
     download: (): Promise<void> => ipcRenderer.invoke('update:download'),
     install: (): Promise<void> => ipcRenderer.invoke('update:install')

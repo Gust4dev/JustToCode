@@ -11,6 +11,8 @@ declare global {
         download(): Promise<void>
         install(): Promise<void>
         check(): Promise<void>
+        /** Versão atual (app.getVersion()) e se é o app instalado (app.isPackaged). */
+        info(): Promise<{ version: string; isPackaged: boolean }>
       }
       settings: {
         get(): Promise<AppConfig>

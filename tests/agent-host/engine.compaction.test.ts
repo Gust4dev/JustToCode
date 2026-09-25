@@ -348,6 +348,7 @@ describe('engine + compactação', () => {
           effectiveWindow: () => Promise.reject(new Error('não usado')),
           primaryWindow: async () => ({ window: 50000, model: 'x/limit' }),
           windowForReported: async () => null,
+          markGone: () => {},
           invalidate: () => {}
         }
       }
