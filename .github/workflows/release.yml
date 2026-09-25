@@ -40,7 +40,9 @@ jobs:
           node scripts/release-notes.mjs "$PREV" "$GITHUB_REF_NAME" > notes.md
           cat notes.md
 
+      # bash: o PowerShell quebra `-c.chave=valor` em dois argumentos.
       - name: publicar
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --win --publish always -c.releaseInfo.releaseNotesFile=notes.md
+        run: npx electron-builder --win --publish always --config.releaseInfo.releaseNotesFile=notes.md
