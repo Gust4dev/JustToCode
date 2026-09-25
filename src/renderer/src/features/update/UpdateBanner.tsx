@@ -9,6 +9,7 @@ import {
   DialogFooter
 } from '@renderer/components/ui/dialog'
 import { Progress } from '@renderer/components/ui/progress'
+import { Markdown } from '@renderer/features/chat/Markdown'
 import type { UpdateState } from '../../../../main/updater/state'
 import { useUpdate } from './useUpdate'
 
@@ -30,9 +31,13 @@ export function UpdateDialog({
         <DialogHeader>
           <DialogTitle>Versão {s.version}</DialogTitle>
         </DialogHeader>
-        <pre className="max-h-72 overflow-auto whitespace-pre-wrap text-xs">
-          {s.notes || 'Sem changelog.'}
-        </pre>
+        <div className="max-h-72 overflow-auto">
+          {s.notes ? (
+            <Markdown text={s.notes} className="text-xs" />
+          ) : (
+            <p className="text-xs text-muted-foreground">Sem changelog.</p>
+          )}
+        </div>
         {s.phase === 'downloading' && <Progress value={s.percent} />}
         <DialogFooter>
           {s.phase === 'available' && (

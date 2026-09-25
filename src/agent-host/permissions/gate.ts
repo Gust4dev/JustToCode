@@ -4,7 +4,12 @@ import type { HostContext } from '../context'
 import type { PermissionGate, PermissionInput } from '../services/types'
 import { ApprovalRepo } from '../repo/approvals'
 import { PermissionRuleRepo } from '../repo/permissionRules'
-import { isSensitivePath, needsAlwaysConfirm } from './alwaysConfirm'
+import {
+  alwaysConfirmFlag,
+  alwaysConfirmReason,
+  isSensitivePath,
+  needsAlwaysConfirm
+} from './alwaysConfirm'
 import { matchesRule, rulePatternFor } from './rules'
 import { TASK_TOOL } from '../tools/task'
 
@@ -49,6 +54,17 @@ const targetOf = (input: PermissionInput): string | null => {
   const p = (input.args as { path?: unknown } | null)?.path
   if (typeof p !== 'string' || !p) return null
   return p.replace(/\\/g, '/').replace(/^(\.\/)+/, '')
+}
+
+/** Flag `always_confirm:<motivo>` quando o pedido cai em ALWAYS_CONFIRM ou em caminho sensível. */
+const alwaysConfirmFlags = (input: PermissionInput): string[] => {
+  if (input.tool.kind === 'read') {
+    const path = targetOf(input)
+    return path && isSensitivePath(path) ? [alwaysConfirmFlag('caminho sensível')] : []
+  }
+  if (input.tool.kind !== 'command') return []
+  const reason = alwaysConfirmReason(commandOf(input.args))
+  return reason ? [alwaysConfirmFlag(reason)] : []
 }
 
 export function createPermissionGate(
@@ -112,7 +128,7 @@ export function createPermissionGate(
       toolCallId,
       kind: tool.kind === 'command' ? 'command' : 'edit',
       summary: colliding.length > 0 ? summary + COLLISION_SUFFIX : summary,
-      flags: colliding.map(collisionFlag)
+      flags: [...colliding.map(collisionFlag), ...alwaysConfirmFlags(input)]
     })
     const promise = new Promise<'allow' | 'deny'>((settle) => {
       waiters.set(approval.id, {

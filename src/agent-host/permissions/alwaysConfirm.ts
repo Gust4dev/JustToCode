@@ -1,12 +1,34 @@
-/** Comandos destrutivos que sempre pedem confirmação, mesmo em allow-all ou com regra lembrada. */
-const DESTRUCTIVE: RegExp[] = [
+/** Motivos exibidos na aprovação (flag `always_confirm:<motivo>`). */
+export type AlwaysConfirmReason =
+  | 'remoção recursiva'
+  | 'envio de dados pela rede'
+  | 'caminho sensível'
+  | 'git destrutivo'
+  | 'comando de sistema'
+
+export const ALWAYS_CONFIRM_PREFIX = 'always_confirm:'
+export const alwaysConfirmFlag = (reason: AlwaysConfirmReason): string =>
+  `${ALWAYS_CONFIRM_PREFIX}${reason}`
+
+const GIT_DESTRUCTIVE: RegExp[] = [
   /\bgit\s+push\b[^\n]*(\s--force(-with-lease)?\b|\s-f\b)/i,
   /\bgit\s+reset\s+--hard\b/i,
-  /\bgit\s+clean\b/i,
-  /(^|[;&|]\s*)(format|diskpart|shutdown)(\.exe)?\b/i,
-  /\breg(\.exe)?\s+delete\b/i,
-  /\b(Remove-Item|rm|rmdir|rd|del)\b[^\n]*(\s-Recurse\b|\s-r\b|\s-rf\b|\s\/s\b)/i
+  /\bgit\s+clean\b/i
 ]
+
+const SYSTEM: RegExp[] = [
+  /(^|[;&|]\s*)(format|diskpart|shutdown)(\.exe)?\b/i,
+  /\breg(\.exe)?\s+delete\b/i
+]
+
+const RECURSIVE_REMOVE: RegExp[] = [
+  // `git rm` fica de fora aqui (ver abaixo): `git rm -r --cached` só mexe no índice.
+  /(?<!\bgit\s+)\b(Remove-Item|rm|rmdir|rd|del)\b[^\n]*(\s-Recurse\b|\s-r\b|\s-rf\b|\s\/s\b)/i,
+  /\bgit\s+rm\b(?![^\n]*\s--cached\b)[^\n]*\s-(r|rf|fr)\b/i
+]
+
+/** Comandos destrutivos que sempre pedem confirmação, mesmo em allow-all ou com regra lembrada. */
+const DESTRUCTIVE: RegExp[] = [...GIT_DESTRUCTIVE, ...SYSTEM, ...RECURSIVE_REMOVE]
 
 /**
  * Envio de dados para fora da máquina (possível exfiltração).
@@ -35,8 +57,22 @@ const SENSITIVE_PATHS: RegExp[] = [
 /** Todos os padrões de comando que sempre pedem confirmação. */
 export const ALWAYS_CONFIRM: RegExp[] = [...DESTRUCTIVE, ...OUTBOUND, ...SENSITIVE_PATHS]
 
+const REASONS: [AlwaysConfirmReason, RegExp[]][] = [
+  ['git destrutivo', GIT_DESTRUCTIVE],
+  ['comando de sistema', SYSTEM],
+  ['remoção recursiva', RECURSIVE_REMOVE],
+  ['envio de dados pela rede', OUTBOUND],
+  ['caminho sensível', SENSITIVE_PATHS]
+]
+
+/** Motivo pelo qual o comando sempre pede confirmação, ou `null`. */
+export function alwaysConfirmReason(command: string): AlwaysConfirmReason | null {
+  for (const [reason, res] of REASONS) if (res.some((re) => re.test(command))) return reason
+  return null
+}
+
 export function needsAlwaysConfirm(command: string): boolean {
-  return ALWAYS_CONFIRM.some((re) => re.test(command))
+  return alwaysConfirmReason(command) !== null
 }
 
 /** Caminho que aponta para credenciais/segredos (ex. `.ssh/id_rsa`, `.aws/credentials`). */

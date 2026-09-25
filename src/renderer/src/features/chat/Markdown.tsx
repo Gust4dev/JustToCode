@@ -2,6 +2,15 @@ import { memo } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { cn } from '@renderer/lib/utils'
+import { CopyIconButton } from './CopyButton'
+
+/** Texto puro de um nó hast (conteúdo do bloco de código). */
+function hastText(n: unknown): string {
+  const node = n as { type?: string; value?: string; children?: unknown[] } | null
+  if (!node) return ''
+  if (node.type === 'text') return node.value ?? ''
+  return (node.children ?? []).map(hastText).join('')
+}
 
 /** Tira a prop `node` (AST) que o react-markdown passa, para não ir parar no DOM. */
 function omitNode<T extends { node?: unknown }>(p: T): Omit<T, 'node'> {
@@ -37,10 +46,16 @@ const components: Components = {
   th: (p) => <th className="border px-2 py-1 text-left font-medium" {...omitNode(p)} />,
   td: (p) => <td className="border px-2 py-1 align-top" {...omitNode(p)} />,
   pre: (p) => (
-    <pre
-      className="my-2 overflow-x-auto rounded-md border bg-muted/50 px-3 py-2 font-mono text-xs leading-relaxed [&>code]:bg-transparent [&>code]:p-0"
-      {...omitNode(p)}
-    />
+    <div className="group/code relative my-2">
+      <pre
+        className="overflow-x-auto rounded-md border bg-muted/50 px-3 py-2 font-mono text-xs leading-relaxed [&>code]:bg-transparent [&>code]:p-0"
+        {...omitNode(p)}
+      />
+      <CopyIconButton
+        text={hastText(p.node).replace(/\n$/, '')}
+        className="absolute top-1.5 right-1.5"
+      />
+    </div>
   ),
   code: ({ className, ...p }) => (
     <code

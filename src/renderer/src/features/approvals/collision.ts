@@ -14,3 +14,18 @@ export function splitApprovalFlags(flags: string[]): { collisions: string[]; oth
   }
   return { collisions, others }
 }
+
+export const ALWAYS_CONFIRM_PREFIX = 'always_confirm:'
+
+/** Separa os motivos de "sempre confirmar" (`always_confirm:<motivo>`) dos demais flags. */
+export function splitAlwaysConfirm(flags: string[]): { reasons: string[]; rest: string[] } {
+  const reasons: string[] = []
+  const rest: string[] = []
+  for (const f of flags) {
+    if (f.startsWith(ALWAYS_CONFIRM_PREFIX)) {
+      const r = f.slice(ALWAYS_CONFIRM_PREFIX.length).trim()
+      if (r && !reasons.includes(r)) reasons.push(r)
+    } else rest.push(f)
+  }
+  return { reasons, rest }
+}

@@ -81,7 +81,7 @@ export function initUpdater(win: BrowserWindow): void {
   ipcMain.handle('update:download', async () => {
     await autoUpdater.downloadUpdate()
   })
-  ipcMain.handle('update:install', () => autoUpdater.quitAndInstall())
+  ipcMain.handle('update:install', () => autoUpdater.quitAndInstall(true, true))
 
   if (app.isPackaged) {
     autoCheck()

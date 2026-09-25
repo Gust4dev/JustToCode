@@ -14,7 +14,10 @@ import {
   type PermissionMode
 } from '../../src/shared/domain'
 import type { EngineEvent } from '../../src/shared/events'
-import { needsAlwaysConfirm } from '../../src/agent-host/permissions/alwaysConfirm'
+import {
+  alwaysConfirmReason,
+  needsAlwaysConfirm
+} from '../../src/agent-host/permissions/alwaysConfirm'
 import { matchesRule, rulePatternFor } from '../../src/agent-host/permissions/rules'
 import { createPermissionGate, type GateChatRepo } from '../../src/agent-host/permissions/gate'
 import { approvalHandlers } from '../../src/agent-host/handlers/approvals'
@@ -126,9 +129,17 @@ describe('ALWAYS_CONFIRM', () => {
     'Remove-Item a.txt',
     'rm a.txt',
     'reg query HKCU\\X',
-    'echo shutdown-later'
+    'echo shutdown-later',
+    'git rm -r --cached node_modules',
+    'git rm a.txt'
   ])('não confirma: %s', (cmd) => {
     expect(needsAlwaysConfirm(cmd)).toBe(false)
+  })
+  it('devolve o motivo', () => {
+    expect(alwaysConfirmReason('rm -rf dist')).toBe('remoção recursiva')
+    expect(alwaysConfirmReason('git push -f')).toBe('git destrutivo')
+    expect(alwaysConfirmReason('cat ~/.ssh/id_rsa')).toBe('caminho sensível')
+    expect(alwaysConfirmReason('ls')).toBeNull()
   })
 })
 

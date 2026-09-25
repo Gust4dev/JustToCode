@@ -73,5 +73,10 @@ describe('normalizeNotes', () => {
     expect(normalizeNotes('a')).toBe('a')
     expect(normalizeNotes([{ note: 'a' }, { note: null }, { note: 'b' }])).toBe('a\n\nb')
     expect(normalizeNotes(null)).toBe('')
+    expect(
+      normalizeNotes(
+        '<ul><li>feat: <b>x</b> &amp; <code>y</code></li><li><a href="https://u">link</a></li></ul>'
+      )
+    ).toBe('- feat: **x** & `y`\n- [link](https://u)')
   })
 })

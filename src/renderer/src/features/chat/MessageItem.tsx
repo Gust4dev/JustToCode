@@ -3,6 +3,7 @@ import { Brain, Check, ChevronRight, Image as ImageIcon } from 'lucide-react'
 import type { Approval, ContentPart, StoredMessage } from '@shared/domain'
 import { cn } from '@renderer/lib/utils'
 import { PayloadButton } from '@renderer/features/payload/PayloadButton'
+import { CopyTextButton } from './CopyButton'
 import { formatBytes, sentPreviews } from './attachments'
 import type { LiveToolCall } from './chatStore'
 import { Markdown } from './Markdown'
@@ -138,9 +139,10 @@ export const MessageItem = memo(function MessageItem({
           ))}
         </div>
       )}
-      {(message.modelUsed || message.requestId) && (
+      {(message.modelUsed || message.requestId || text) && (
         <div className="flex items-center gap-3 text-[11px] text-muted-foreground/60 transition-colors group-hover/msg:text-muted-foreground">
           {message.modelUsed && <span className="font-mono">{message.modelUsed}</span>}
+          {text && <CopyTextButton text={text} />}
           {message.requestId && <PayloadButton requestId={message.requestId} />}
         </div>
       )}

@@ -5,7 +5,7 @@ import { Button } from '@renderer/components/ui/button'
 import { cn } from '@renderer/lib/utils'
 import { findAnyChat, useProjects } from '@renderer/features/projects/store'
 import { useApprovals } from './approvalsStore'
-import { splitApprovalFlags } from './collision'
+import { splitAlwaysConfirm, splitApprovalFlags } from './collision'
 import { decideApproval } from './approvalsFeed'
 
 /** "edit src/a.ts" → "Editar src/a.ts"; "write x" → "Escrever x". */
@@ -51,7 +51,9 @@ export function ApprovalCard({ approval }: { approval: Approval }): React.JSX.El
   const deciding = useApprovals((s) => Boolean(s.deciding[approval.id]))
   const pending = live.status === 'pending'
   const Icon = live.kind === 'command' ? Terminal : FileEdit
-  const { collisions, others } = splitApprovalFlags(live.flags)
+  const split = splitApprovalFlags(live.flags)
+  const { collisions } = split
+  const { reasons, rest: others } = splitAlwaysConfirm(split.others)
 
   return (
     <div
@@ -74,6 +76,17 @@ export function ApprovalCard({ approval }: { approval: Approval }): React.JSX.El
         <div className="flex flex-wrap gap-1">
           {collisions.map((id) => (
             <CollisionBadge key={`c-${id}`} chatId={id} />
+          ))}
+          {reasons.map((r) => (
+            <Badge
+              key={`a-${r}`}
+              variant="outline"
+              title="Este pedido sempre pede confirmação, mesmo com permissões liberadas"
+              className="border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+            >
+              <TriangleAlert />
+              Sempre confirmar: {r}
+            </Badge>
           ))}
           {others.map((f) => (
             <Badge key={f} variant="outline" className="text-amber-700 dark:text-amber-400">
