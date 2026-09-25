@@ -1,7 +1,7 @@
 {
   "name": "justtocode",
   "productName": "JustToCode",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Agentes de código com contexto sob controle",
   "main": "./out/main/index.js",
   "author": "Gust4dev",
