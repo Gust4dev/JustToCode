@@ -1,6 +1,7 @@
 import type { AppConfig, ComboInfo, ModelInfo } from '@shared/domain'
 import type { ComboOverrideRepo } from '../repo/comboOverrides'
 import type { ModelWindowRepo } from '../repo/modelWindows'
+import { supportsPdf } from '@shared/attachmentKinds'
 import { defaultRouterDbPath, readRouterCombos } from './routerDb'
 
 export interface ComboResolver {
@@ -21,6 +22,8 @@ export interface ComboResolver {
    * `info` avisa e `primaryWindow` o pula. Casa por igualdade ou sufixo após `/`.
    */
   markGone(combo: string, model: string): void
+  /** PDF nativo: todos os membros não ignorados com `pdf` (opcional em fakes; ausente = false). */
+  supportsPdf?(combo: string): Promise<boolean>
   invalidate(): void
 }
 
@@ -161,6 +164,9 @@ export function createComboResolver(d: {
       const manual = d.windows.get(reported)
       if (manual != null) return manual
       return (await models()).find((m) => m.id === reported)?.contextWindow ?? null
+    },
+    async supportsPdf(combo) {
+      return supportsPdf(await info(combo), combo, await models())
     },
     markGone(combo, model) {
       let set = gone.get(combo)

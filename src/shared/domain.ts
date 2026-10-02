@@ -62,7 +62,10 @@ export interface ToolCallSpec {
 
 /** Imagens ficam como `blob:<sha256>` no banco; o engine troca por data URL ao montar o request. */
 export type ContentPart =
-  { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+  /** Arquivo nativo (PDF) no formato OpenAI; gravado como `blob:<hash>`, vira data URL no request. */
+  | { type: 'file'; file: { filename: string; file_data: string } }
 
 export type ChatMessage =
   | { role: 'system'; content: string }
@@ -190,6 +193,8 @@ export interface ModelInfo {
   maxOutput: number | null
   vision: boolean
   tools: boolean
+  /** Aceita PDF nativo (`capabilities.pdf` do 9router); ausente = desconhecido. */
+  pdf?: boolean
 }
 
 export interface RequestRecord {

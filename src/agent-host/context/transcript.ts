@@ -17,7 +17,15 @@ export function toTranscript(msgs: StoredMessage[], maxToolChars = 2000): string
         const text =
           typeof m.content === 'string'
             ? m.content
-            : m.content.map((p) => (p.type === 'text' ? p.text : '[image]')).join('\n')
+            : m.content
+                .map((p) =>
+                  p.type === 'text'
+                    ? p.text
+                    : p.type === 'file'
+                      ? `[file: ${p.file.filename}]`
+                      : '[image]'
+                )
+                .join('\n')
         lines.push(`USER: ${text}`)
         break
       }

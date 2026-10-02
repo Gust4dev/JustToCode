@@ -112,8 +112,7 @@ export function AppShell(): React.JSX.Element {
   // Status/log/progresso dos componentes (9router, llama, downloads) vivem o app inteiro.
   useEffect(() => initComponentsFeed((p) => toast.success(`Download concluído: ${p.label}`)), [])
 
-  const toggleDiff = (): void => {
-    const next = !diffOpen
+  const setDiff = (next: boolean): void => {
     setDiffOpen(next)
     try {
       localStorage.setItem(DIFF_KEY, next ? '1' : '0')
@@ -121,6 +120,7 @@ export function AppShell(): React.JSX.Element {
       // preferência só na memória
     }
   }
+  const toggleDiff = (): void => setDiff(!diffOpen)
 
   let center: React.JSX.Element
   if (view === 'components') center = <ComponentsView />
@@ -143,7 +143,10 @@ export function AppShell(): React.JSX.Element {
         onAction={() => void newChat(projectId)}
       />
     )
-  else center = <ChatView key={chatId} chatId={chatId} />
+  else
+    center = (
+      <ChatView key={chatId} chatId={chatId} diffOpen={diffOpen} onOpenDiff={() => setDiff(true)} />
+    )
 
   return (
     <TooltipProvider delayDuration={400}>

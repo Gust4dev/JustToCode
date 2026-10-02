@@ -6,7 +6,8 @@ import { call } from '@renderer/lib/host'
 import { useEngineEvent } from '@renderer/lib/engineEvents'
 import { errorMessage, findAnyChat, useProjects } from '@renderer/features/projects/store'
 import { useUi } from '@renderer/stores/ui'
-import { toUpload, sentPreviews, type DraftAttachment } from './attachments'
+import { ChangesBar } from '@renderer/features/diff/ChangesBar'
+import { toUpload, sentPreviews, typeLabel, type DraftAttachment } from './attachments'
 import {
   applyApprovalEvent,
   applyEngineEvent,
@@ -56,7 +57,16 @@ function SubagentBanner({ parentChatId }: { parentChatId: string }): React.JSX.E
   )
 }
 
-export function ChatView({ chatId }: { chatId: string }): React.JSX.Element {
+export function ChatView({
+  chatId,
+  diffOpen = true,
+  onOpenDiff
+}: {
+  chatId: string
+  /** Painel de alterações aberto; recolhido → barra de arquivos alterados acima do compositor. */
+  diffOpen?: boolean
+  onOpenDiff?(): void
+}): React.JSX.Element {
   const [state, setState] = useState<ChatViewState>(() =>
     initialChatState(findAnyChat(useProjects.getState(), chatId)?.status ?? 'idle')
   )
@@ -138,7 +148,7 @@ export function ChatView({ chatId }: { chatId: string }): React.JSX.Element {
       e.message.kind !== 'summary' &&
       outgoing.current
     ) {
-      if (outgoing.current.length > 0) sentPreviews.set(e.message.id, outgoing.current)
+      if (outgoing.current.some(Boolean)) sentPreviews.set(e.message.id, outgoing.current)
       outgoing.current = null
       setPending(null)
     }
@@ -164,10 +174,17 @@ export function ChatView({ chatId }: { chatId: string }): React.JSX.Element {
       atBottom.current = true
       const queueing = willQueue.current
       if (!queueing) {
-        outgoing.current = attachments.map((a) => a.dataUrl)
+        outgoing.current = attachments.map((a) => (a.cls === 'image' ? a.dataUrl : ''))
         setPending({
           text,
-          receipts: attachments.map((a) => ({ name: a.name, bytes: a.bytes, preview: a.dataUrl }))
+          receipts: attachments.map((a) => ({
+            name: a.name,
+            bytes: a.bytes,
+            preview: a.cls === 'image' ? a.dataUrl : null,
+            kind: a.cls === 'image' ? 'image' : 'file',
+            type: typeLabel(a.name, a.mime),
+            delivery: null
+          }))
         })
       }
       try {
@@ -189,7 +206,7 @@ export function ChatView({ chatId }: { chatId: string }): React.JSX.Element {
         }
         // Se o evento message_added ainda não chegou, guarda as prévias pelo id devolvido.
         if (!queueing && outgoing.current) {
-          if (messageId && outgoing.current.length > 0) {
+          if (messageId && outgoing.current.some(Boolean)) {
             sentPreviews.set(messageId, outgoing.current)
           }
           outgoing.current = null
@@ -299,7 +316,14 @@ export function ChatView({ chatId }: { chatId: string }): React.JSX.Element {
           busy={busy}
           onSend={send}
           onStop={stop}
-          top={<QueuePanel queue={state.queue} onQueue={onQueue} />}
+          top={
+            <>
+              {!diffOpen && projectId && onOpenDiff && (
+                <ChangesBar projectId={projectId} chatId={chatId} onOpenPanel={onOpenDiff} />
+              )}
+              <QueuePanel queue={state.queue} onQueue={onQueue} />
+            </>
+          }
         />
       )}
     </div>

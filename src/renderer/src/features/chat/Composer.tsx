@@ -10,13 +10,8 @@ import { ComboSelect } from '@renderer/features/context/ComboSelect'
 import { ContextMeter } from '@renderer/features/context/ContextMeter'
 import { PermissionModeSelect } from '@renderer/features/context/PermissionModeSelect'
 import { AttachmentChips } from './AttachmentChips'
-import {
-  MAX_IMAGE_BYTES,
-  formatBytes,
-  isImageFile,
-  readImageFile,
-  type DraftAttachment
-} from './attachments'
+import { useComposerFocus } from './useComposerFocus'
+import { checkFile, readAttachment, type DraftAttachment } from './attachments'
 import {
   applyMention,
   filterCommands,
@@ -254,21 +249,22 @@ export function Composer({
   }, [chatId])
 
   const addFiles = async (files: File[]): Promise<void> => {
-    const images = files.filter(isImageFile)
-    if (images.length < files.length) toast.warning('Por enquanto só dá para anexar imagens.')
-    const ok = images.filter((f) => {
-      if (f.size <= MAX_IMAGE_BYTES) return true
-      toast.error(`${f.name || 'Imagem'} passa de ${formatBytes(MAX_IMAGE_BYTES)}.`)
-      return false
-    })
+    const ok: { file: File; cls: DraftAttachment['cls'] }[] = []
+    for (const f of files) {
+      const r = checkFile(f.name, f.type, f.size)
+      if ('error' in r) toast.error(`${f.name || 'Arquivo'} recusado: ${r.error}.`)
+      else ok.push({ file: f, cls: r.cls })
+    }
     if (ok.length === 0) return
     try {
-      const read = await Promise.all(ok.map(readImageFile))
+      const read = await Promise.all(ok.map((o) => readAttachment(o.file, o.cls)))
       setItems((cur) => [...cur, ...read])
     } catch (e) {
-      toast.error(`Não foi possível ler a imagem: ${(e as Error).message}`)
+      toast.error(`Não foi possível ler o arquivo: ${(e as Error).message}`)
     }
   }
+
+  useComposerFocus(areaRef, (files) => void addFiles(files))
 
   // Com o chat rodando, enviar enfileira (o host devolve `queuedId`).
   const hasDraft = text.trim().length > 0 || items.length > 0
@@ -344,6 +340,7 @@ export function Composer({
             <SlashMenu items={matches} active={activeIndex} onPick={pick} onHover={setActive} />
           )}
           <AttachmentChips
+            chatId={chatId}
             items={items}
             onRemove={(id) => setItems((cur) => cur.filter((a) => a.id !== id))}
           />
@@ -398,8 +395,8 @@ export function Composer({
             <Button
               variant="ghost"
               size="icon-xs"
-              aria-label="Anexar imagem"
-              title="Anexar imagem"
+              aria-label="Anexar arquivo"
+              title="Anexar arquivo (imagem, texto/código ou PDF)"
               onClick={() => fileRef.current?.click()}
             >
               <Paperclip />
@@ -407,7 +404,6 @@ export function Composer({
             <input
               ref={fileRef}
               type="file"
-              accept="image/*"
               multiple
               hidden
               onChange={(e) => {

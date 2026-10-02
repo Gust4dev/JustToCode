@@ -1,9 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Check, CheckCheck, GitCommitHorizontal, Undo2, X } from 'lucide-react'
-import type { ChangedFileSummary, Chat } from '@shared/domain'
+import type { Chat } from '@shared/domain'
 import { call } from '@renderer/lib/host'
-import { useEngineEvent } from '@renderer/lib/engineEvents'
 import { errorMessage } from '@renderer/features/projects/store'
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@renderer/lib/utils'
@@ -11,6 +10,7 @@ import { FileList } from './FileList'
 import { CommitMessageDialog } from './CommitMessageDialog'
 import type { ConflictTarget } from './ConflictDialog'
 import { interpretRevert, originLabels } from './origins'
+import { useChangedFiles } from './useChangedFiles'
 
 // Monaco é pesado: só carrega quando um arquivo é aberto (ou um conflito aparece).
 const DiffView = lazy(() => import('./DiffView').then((m) => ({ default: m.DiffView })))
@@ -19,7 +19,6 @@ const ConflictDialog = lazy(() =>
 )
 
 type Filter = 'all' | 'chat'
-const DEBOUNCE_MS = 300
 
 export function DiffPanel({
   projectId,
@@ -32,15 +31,12 @@ export function DiffPanel({
   const filter: Filter = chatId ? filterPref : 'all'
   const filterChatId = filter === 'chat' ? chatId : null
 
-  const [files, setFiles] = useState<ChangedFileSummary[] | null>(null)
-  const [loadError, setLoadError] = useState<string | null>(null)
+  const { files, loadError, version, refresh } = useChangedFiles(projectId, filterChatId)
   const [chats, setChats] = useState<Map<string, Chat>>(new Map())
   const [selected, setSelected] = useState<string | null>(null)
-  const [version, setVersion] = useState(0)
   const [busy, setBusy] = useState(false)
   const [conflict, setConflict] = useState<ConflictTarget | null>(null)
   const [commitOpen, setCommitOpen] = useState(false)
-  const reqSeq = useRef(0)
 
   const loadChats = useCallback(
     (): Promise<void> =>
@@ -51,31 +47,9 @@ export function DiffPanel({
     [projectId]
   )
 
-  const refresh = useCallback((): Promise<void> => {
-    const seq = ++reqSeq.current
-    return call('changes.list', {
-      projectId,
-      ...(filterChatId ? { chatId: filterChatId } : {})
-    }).then(
-      (list) => {
-        if (seq !== reqSeq.current) return
-        setFiles(list)
-        setLoadError(null)
-        setVersion((v) => v + 1)
-      },
-      (e) => {
-        if (seq === reqSeq.current) setLoadError(errorMessage(e))
-      }
-    )
-  }, [projectId, filterChatId])
-
   useEffect(() => {
     void loadChats()
   }, [loadChats])
-
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
 
   // Chat novo mexeu em arquivo → recarrega as cores (uma vez por id desconhecido; chat apagado não entra em loop).
   const askedIds = useRef(new Set<string>())
@@ -87,22 +61,6 @@ export function DiffPanel({
     unknown.forEach((id) => askedIds.current.add(id))
     void loadChats()
   }, [files, chats, loadChats])
-
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(
-    () => () => {
-      if (timer.current) clearTimeout(timer.current)
-    },
-    []
-  )
-  useEngineEvent((e) => {
-    if (e.type !== 'file_touched' || e.projectId !== projectId) return
-    if (timer.current) clearTimeout(timer.current)
-    timer.current = setTimeout(() => {
-      timer.current = null
-      void refresh()
-    }, DEBOUNCE_MS)
-  })
 
   const selectedFile = useMemo(
     () => files?.find((f) => f.path === selected) ?? null,

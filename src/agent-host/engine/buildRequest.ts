@@ -67,6 +67,17 @@ function resolveImages(sm: StoredMessage, blobs: BlobStore): ChatMessage {
   const m = sm.message
   if (m.role !== 'user' || typeof m.content === 'string') return m
   const parts: ContentPart[] = m.content.map((p) => {
+    if (p.type === 'file' && p.file.file_data.startsWith('blob:')) {
+      const buf = blobs.get(p.file.file_data.slice('blob:'.length))
+      if (!buf) return { type: 'text', text: `[file unavailable: ${p.file.filename}]` }
+      return {
+        type: 'file',
+        file: {
+          filename: p.file.filename,
+          file_data: `data:application/pdf;base64,${buf.toString('base64')}`
+        }
+      }
+    }
     if (p.type !== 'image_url' || !p.image_url.url.startsWith('blob:')) return p
     const hash = p.image_url.url.slice('blob:'.length)
     const buf = blobs.get(hash)
@@ -90,7 +101,7 @@ export function activeHistory(history: StoredMessage[]): StoredMessage[] {
   return [...live.filter((m) => m.kind === 'summary'), ...live.filter((m) => m.kind !== 'summary')]
 }
 
-/** Monta o request: system + summary vigente + histórico não compactado + ferramentas; troca `blob:<hash>` por data URL. */
+/** Monta o request: system + summary vigente + histórico não compactado + ferramentas; troca `blob:<hash>` (imagens e PDFs) por data URL. */
 export function buildRequest(p: {
   model: string
   system: string

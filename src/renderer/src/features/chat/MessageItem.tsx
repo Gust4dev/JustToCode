@@ -1,10 +1,10 @@
 import { memo } from 'react'
-import { Brain, Check, ChevronRight, Image as ImageIcon } from 'lucide-react'
+import { Brain, Check, ChevronRight, FileText, Image as ImageIcon } from 'lucide-react'
 import type { Approval, ContentPart, StoredMessage } from '@shared/domain'
 import { cn } from '@renderer/lib/utils'
 import { PayloadButton } from '@renderer/features/payload/PayloadButton'
 import { CopyTextButton } from './CopyButton'
-import { formatBytes, sentPreviews } from './attachments'
+import { formatBytes, sentDelivery, sentPreviews, typeLabel, userTextOf } from './attachments'
 import type { LiveToolCall } from './chatStore'
 import { Markdown } from './Markdown'
 import { ToolCallCard } from './ToolCallCard'
@@ -13,6 +13,11 @@ export interface ReceiptItem {
   name: string
   bytes: number
   preview: string | null
+  kind: 'image' | 'file'
+  /** Rótulo do tipo ("PDF", "TS"…). */
+  type: string
+  /** Como foi enviado ("texto", "PDF nativo"…); null enquanto envia. */
+  delivery: string | null
 }
 
 const textOf = (c: string | ContentPart[] | null): string =>
@@ -39,34 +44,57 @@ export function UserBubble({
     <div className="flex flex-col items-end gap-1.5">
       {receipts.length > 0 && (
         <div className="flex flex-wrap justify-end gap-2">
-          {receipts.map((r, i) => (
-            <figure key={i} className="flex flex-col items-end gap-1">
-              {r.preview ? (
-                <img
-                  src={r.preview}
-                  alt={r.name}
-                  title={r.name}
-                  className="max-h-32 max-w-48 rounded-md border object-cover"
-                />
-              ) : (
-                <div
-                  title={r.name}
-                  className="flex size-16 items-center justify-center rounded-md border bg-muted text-muted-foreground"
-                >
-                  <ImageIcon className="size-5" />
-                </div>
-              )}
-              <figcaption
+          {receipts.map((r, i) =>
+            r.kind === 'file' ? (
+              <div
+                key={i}
+                title={r.name}
                 className={cn(
-                  'flex items-center gap-1 text-[11px] text-muted-foreground',
+                  'flex h-10 max-w-64 items-center gap-2 rounded-md border bg-muted/50 px-2 text-xs',
                   !confirmed && 'opacity-70'
                 )}
               >
-                {confirmed ? 'imagem enviada' : 'enviando'} · {formatBytes(r.bytes)}
-                {confirmed && <Check className="size-3 text-emerald-600 dark:text-emerald-400" />}
-              </figcaption>
-            </figure>
-          ))}
+                <FileText className="size-4 shrink-0 text-muted-foreground" />
+                <div className="min-w-0 leading-tight">
+                  <div className="truncate">{r.name}</div>
+                  <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                    {r.type} · {formatBytes(r.bytes)}
+                    {confirmed ? (r.delivery ? ` · ${r.delivery}` : '') : ' · enviando'}
+                    {confirmed && (
+                      <Check className="size-3 text-emerald-600 dark:text-emerald-400" />
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <figure key={i} className="flex flex-col items-end gap-1">
+                {r.preview ? (
+                  <img
+                    src={r.preview}
+                    alt={r.name}
+                    title={r.name}
+                    className="max-h-32 max-w-48 rounded-md border object-cover"
+                  />
+                ) : (
+                  <div
+                    title={r.name}
+                    className="flex size-16 items-center justify-center rounded-md border bg-muted text-muted-foreground"
+                  >
+                    <ImageIcon className="size-5" />
+                  </div>
+                )}
+                <figcaption
+                  className={cn(
+                    'flex items-center gap-1 text-[11px] text-muted-foreground',
+                    !confirmed && 'opacity-70'
+                  )}
+                >
+                  {confirmed ? 'imagem enviada' : 'enviando'} · {formatBytes(r.bytes)}
+                  {confirmed && <Check className="size-3 text-emerald-600 dark:text-emerald-400" />}
+                </figcaption>
+              </figure>
+            )
+          )}
         </div>
       )}
       {text && (
@@ -112,12 +140,17 @@ export const MessageItem = memo(function MessageItem({
   if (message.kind === 'summary') return null
   if (m.role === 'user') {
     const previews = sentPreviews.get(message.id) ?? []
-    const receipts = message.attachments.map((a, i) => ({
+    const receipts = message.attachments.map((a, i): ReceiptItem => ({
       name: a.name,
       bytes: a.bytes,
-      preview: previews[i] ?? null
+      preview: previews[i] || null,
+      kind: a.kind,
+      type: typeLabel(a.name, a.mime),
+      delivery: sentDelivery(m.content, a)
     }))
-    return <UserBubble text={textOf(m.content)} receipts={receipts} confirmed />
+    return (
+      <UserBubble text={userTextOf(m.content, message.attachments)} receipts={receipts} confirmed />
+    )
   }
   if (m.role !== 'assistant') return null
 

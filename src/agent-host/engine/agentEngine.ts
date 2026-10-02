@@ -10,7 +10,15 @@ import type {
 } from '@shared/domain'
 import type { EngineEvent } from '@shared/events'
 import { RpcError } from '@shared/rpc'
+import {
+  classifyAttachment,
+  decodeText,
+  fileBlock,
+  pdfTextHeader,
+  rejectReason
+} from '@shared/attachmentKinds'
 import { estimateMessage } from '../context/tokenizer'
+import { extractPdfText } from './pdfText'
 import { compactChat, summarizerModels } from '../context/compaction'
 import { agentPrompt, filterTools, findAgent, availableAgents } from '../ecosystem/agents'
 import { TASK_TOOL, type SubagentRequest } from '../tools/task'
@@ -53,7 +61,6 @@ export interface AgentEngine {
 export type { EngineDeps }
 
 const TERMINAL: ChatStatus[] = ['idle', 'error', 'interrupted']
-const MAX_TEXT_ATTACHMENT_CHARS = 200_000
 const MODELS_REFETCH_MS = 60_000
 /** Quanto o turno espera pela lista de modelos antes de seguir sem a janela. */
 const MODELS_WAIT_MS = 3000
@@ -215,10 +222,16 @@ ${cfg.routerDbPath}`
     }
   }
 
-  const buildUserMessage = (
+  /**
+   * Mensagem do usuário com anexos: imagem → `image_url`; texto/código → bloco de código;
+   * PDF → parte `file` nativa (modelo/combo com `pdf`) ou texto extraído. Lança com motivo claro
+   * para anexo recusado (binário, grande demais, PDF ilegível).
+   */
+  const buildUserMessage = async (
     text: string,
-    attachments: AttachmentUpload[]
-  ): {
+    attachments: AttachmentUpload[],
+    model: string
+  ): Promise<{
     message: ChatMessage
     metas: {
       kind: 'image' | 'file'
@@ -229,37 +242,66 @@ ${cfg.routerDbPath}`
       width: number | null
       height: number | null
     }[]
-  } => {
-    const metas: ReturnType<typeof buildUserMessage>['metas'] = []
+  }> => {
+    const metas: Awaited<ReturnType<typeof buildUserMessage>>['metas'] = []
     const images: ContentPart[] = []
     const files: ContentPart[] = []
+    let nativePdf: boolean | null = null
+    const pdfNative = async (): Promise<boolean> =>
+      (nativePdf ??= model
+        ? ((await d.resolver.supportsPdf?.(model).catch(() => false)) ?? false)
+        : false)
     for (const a of attachments) {
       const buf = Buffer.from(a.dataBase64, 'base64')
+      const cls = classifyAttachment(a.name, a.mime)
+      const reason = rejectReason(cls, buf.length)
+      if (reason) throw new RpcError(`${a.name}: ${reason}`, 'ATTACHMENT_REJECTED')
+      let part: ContentPart
+      if (cls === 'image') {
+        part = { type: 'image_url', image_url: { url: '' } }
+      } else if (cls === 'text') {
+        const body = decodeText(buf)
+        if (body === null) {
+          throw new RpcError(
+            `${a.name}: parece binário, não dá para enviar como texto`,
+            'ATTACHMENT_REJECTED'
+          )
+        }
+        part = { type: 'text', text: fileBlock(a.name, body) }
+      } else if (await pdfNative()) {
+        part = { type: 'file', file: { filename: a.name, file_data: '' } }
+      } else {
+        let body: string
+        try {
+          body = await extractPdfText(buf)
+        } catch (e) {
+          throw new RpcError(
+            `${a.name}: não foi possível ler o PDF (${e instanceof Error ? e.message : String(e)})`,
+            'ATTACHMENT_REJECTED'
+          )
+        }
+        part = {
+          type: 'text',
+          text: `${pdfTextHeader(a.name)}\n${body || '[o PDF não tem texto extraível]'}`
+        }
+      }
       const blobHash = ctx.blobs.put(buf)
-      const isImage = a.mime.startsWith('image/')
-      const size = isImage ? imageSize(buf) : null
+      const size = cls === 'image' ? imageSize(buf) : null
       metas.push({
-        kind: isImage ? 'image' : 'file',
+        kind: cls === 'image' ? 'image' : 'file',
         name: a.name,
         blobHash,
-        mime: a.mime,
+        mime: cls === 'pdf' ? 'application/pdf' : a.mime || 'application/octet-stream',
         bytes: buf.length,
         width: size?.width ?? null,
         height: size?.height ?? null
       })
-      if (isImage) {
+      if (part.type === 'image_url') {
         images.push({ type: 'image_url', image_url: { url: `blob:${blobHash}` } })
-      } else if (!buf.subarray(0, 8192).includes(0)) {
-        let body = buf.toString('utf8')
-        if (body.length > MAX_TEXT_ATTACHMENT_CHARS) {
-          body = body.slice(0, MAX_TEXT_ATTACHMENT_CHARS) + '\n[attachment truncated]'
-        }
-        files.push({
-          type: 'text',
-          text: `<attached_file name="${a.name}">\n${body}\n</attached_file>`
-        })
+      } else if (part.type === 'file') {
+        files.push({ type: 'file', file: { filename: a.name, file_data: `blob:${blobHash}` } })
       } else {
-        files.push({ type: 'text', text: `[binary attachment omitted: ${a.name}]` })
+        files.push(part)
       }
     }
     if (!images.length && !files.length) return { message: { role: 'user', content: text }, metas }
@@ -369,7 +411,11 @@ ${cfg.routerDbPath}`
   }
 
   /** Grava a mensagem do usuário e dispara o turno em background; lança se não puder começar. */
-  function startTurn(chatId: string, text: string, list: AttachmentUpload[]): string {
+  async function startTurn(
+    chatId: string,
+    text: string,
+    list: AttachmentUpload[]
+  ): Promise<string> {
     if (running.has(chatId)) throw new RpcError('Chat ocupado', 'CHAT_BUSY')
     const chat = d.chats.get(chatId)
     if (!chat) throw new RpcError('Chat não encontrado', 'NOT_FOUND')
@@ -394,7 +440,8 @@ ${cfg.routerDbPath}`
             text
           ).text
         : text
-      const { message, metas } = buildUserMessage(finalText, list)
+      const model = chat.combo || d.getConfig().defaultCombo
+      const { message, metas } = await buildUserMessage(finalText, list, model)
       const stored = d.messages.append(chatId, message, { tokenEst: estimateMessage(message) })
       for (const m of metas) stored.attachments.push(d.messages.addAttachment(stored.id, m))
       messageId = stored.id
@@ -419,9 +466,7 @@ ${cfg.routerDbPath}`
     blobs: ctx.blobs,
     emit: (e) => ctx.emit(e),
     isBusy: (chatId) => running.has(chatId),
-    start: (chatId, text, list) => {
-      startTurn(chatId, text, list)
-    }
+    start: (chatId, text, list) => startTurn(chatId, text, list).then(() => {})
   })
 
   const titleAttempted = new Set<string>()
@@ -487,7 +532,7 @@ ${cfg.routerDbPath}`
         return { messageId: null, queuedId: queue.enqueue(chatId, text, list).id }
       }
       queue.clearStalePause(chatId)
-      return { messageId: startTurn(chatId, text, list), queuedId: null }
+      return { messageId: await startTurn(chatId, text, list), queuedId: null }
     },
 
     continue(chatId) {

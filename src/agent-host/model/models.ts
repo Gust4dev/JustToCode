@@ -21,7 +21,8 @@ export function parseModels(json: unknown): ModelInfo[] {
       contextWindow: num(item.context_length) ?? num(caps.contextWindow),
       maxOutput: num(item.max_completion_tokens) ?? num(caps.maxOutput),
       vision: caps.vision === true,
-      tools: caps.tools === true
+      tools: caps.tools === true,
+      ...(caps.pdf === true ? { pdf: true } : {})
     })
   }
   return out

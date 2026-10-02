@@ -2,6 +2,7 @@ import type { AttachmentUpload } from '@shared/api'
 import type { AttachmentMeta, QueuedMessage, QueueState } from '@shared/domain'
 import type { EngineEvent } from '@shared/events'
 import { RpcError } from '@shared/rpc'
+import { classifyAttachment } from '@shared/attachmentKinds'
 import type { BlobStore } from '../blobs'
 import type { QueueRepo } from '../repo/queue'
 import { newId } from '../ids'
@@ -12,8 +13,8 @@ export interface ChatQueueDeps {
   emit(e: EngineEvent): void
   /** Chat ocupado (turno ou compactação em andamento). */
   isBusy(chatId: string): boolean
-  /** Inicia um turno com a mensagem (mesmo caminho do `send` direto); lança se não puder. */
-  start(chatId: string, text: string, attachments: AttachmentUpload[]): void
+  /** Inicia um turno com a mensagem (mesmo caminho do `send` direto); rejeita se não puder. */
+  start(chatId: string, text: string, attachments: AttachmentUpload[]): Promise<void> | void
 }
 
 export interface ChatQueue {
@@ -66,15 +67,24 @@ export function createChatQueue(d: ChatQueueDeps): ChatQueue {
     const s = d.repo.state(chatId)
     if (s.paused || !s.items.length) return
     const item = s.items[0]
-    try {
-      d.start(chatId, item.text, toUploads(item.attachments))
-    } catch (e) {
+    const fail = (e: unknown): void => {
       d.repo.setPaused(chatId, true, e instanceof Error ? e.message : String(e))
       changed(chatId)
+    }
+    const done = (): void => {
+      d.repo.remove(item.id)
+      changed(chatId)
+    }
+    let started: Promise<void> | void
+    try {
+      started = d.start(chatId, item.text, toUploads(item.attachments))
+    } catch (e) {
+      fail(e)
       return
     }
-    d.repo.remove(item.id)
-    changed(chatId)
+    // Início assíncrono (ex.: PDF extraído): o item só sai da fila quando a mensagem foi gravada.
+    if (started) started.then(done, fail)
+    else done()
   }
 
   const schedule = (chatId: string): void => {
@@ -91,7 +101,7 @@ export function createChatQueue(d: ChatQueueDeps): ChatQueue {
         const buf = Buffer.from(a.dataBase64, 'base64')
         return {
           id: newId(),
-          kind: a.mime.startsWith('image/') ? 'image' : 'file',
+          kind: classifyAttachment(a.name, a.mime) === 'image' ? 'image' : 'file',
           name: a.name,
           blobHash: d.blobs.put(buf),
           mime: a.mime,
